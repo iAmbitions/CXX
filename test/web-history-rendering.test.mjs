@@ -19,15 +19,15 @@ function messageSandbox() {
     sourceBetween("function itemToBubble(", "// —— 轻量 markdown 渲染"),
   ].join("\n");
   const sandbox = { app: { sawFunctionCalls: false } };
-  vm.runInNewContext(`${source}\nglobalThis.api = { normalizeUserMessage, itemToBubble };`, sandbox);
+  vm.runInNewContext(`${source}\nglobalThis.api = { normalizeUserMessage, isInternalUserMessage, responseMessageText, itemToBubble };`, sandbox);
   return sandbox.api;
 }
 
 function renderFilter() {
   const source = sourceBetween("function shouldRenderTranscriptBubble(", "function renderInto(");
   const sandbox = {};
-  vm.runInNewContext(`${source}\nglobalThis.filter = shouldRenderTranscriptBubble;`, sandbox);
-  return sandbox.filter;
+  vm.runInNewContext(`${source}\nglobalThis.api = { shouldRenderTranscriptBubble, isDuplicateTranscriptBubble, earlierRestoreY };`, sandbox);
+  return sandbox.api;
 }
 
 test("附件包装只展示用户真实请求", () => {
@@ -81,20 +81,88 @@ test("带图片的用户消息保留 imageRef，同时清掉附件包装", () =>
   assert.deepEqual(Array.from(bubble.refs), ["image-1"]);
 });
 
-test("已有对话隐藏工具命令，实时执行仍展示工具状态", () => {
-  const shouldRender = renderFilter();
-  assert.equal(shouldRender({ cls: "tool" }, false), false);
-  assert.equal(shouldRender({ cls: "toolout" }, false), false);
-  assert.equal(shouldRender({ cls: "tool" }, true), true);
+test("已有对话只展示真实对话，实时执行仍展示过程", () => {
+  const { shouldRenderTranscriptBubble: shouldRender } = renderFilter();
+  for (const cls of ["tool", "toolout", "diff", "think", "sysnote", "question", "questionout"]) {
+    assert.equal(shouldRender({ cls }, false), false, `history should hide ${cls}`);
+    assert.equal(shouldRender({ cls }, true), true, `live should show ${cls}`);
+  }
+  assert.equal(shouldRender({ cls: "assistant", phase: "commentary" }, false), false);
+  assert.equal(shouldRender({ cls: "assistant", phase: "final_answer" }, false), true);
   assert.equal(shouldRender({ cls: "user" }, false), true);
-  assert.equal(shouldRender({ cls: "assistant" }, false), true);
-  assert.equal(shouldRender({ cls: "diff" }, false), true);
+  assert.equal(shouldRender({ cls: "images" }, false), true);
   assert.match(webSource, /if \(!shouldRenderTranscriptBubble\(bubble, live\)\) return;/);
+});
+
+
+
+test("新版 response_item-only 会话能展示用户消息和 Agent 最终回答", () => {
+  const { itemToBubble } = messageSandbox();
+  const user = itemToBubble({ type: "response_item", ordinal: 10, payload: {
+    type: "message", role: "user", content: [{ type: "input_text", text: "帮我修复会话" }],
+  }});
+  const answer = itemToBubble({ type: "response_item", ordinal: 20, payload: {
+    type: "message", role: "assistant", phase: "final_answer",
+    content: [{ type: "output_text", text: "已经修好" }],
+  }});
+  assert.deepEqual({ cls: user.cls, text: user.text, origin: user.origin }, { cls: "user", text: "帮我修复会话", origin: "response" });
+  assert.deepEqual({ cls: answer.cls, text: answer.text, phase: answer.phase, origin: answer.origin },
+    { cls: "assistant", text: "已经修好", phase: "final_answer", origin: "response" });
+});
+
+test("内部上下文不会混进用户对话", () => {
+  const { itemToBubble } = messageSandbox();
+  for (const text of [
+    "# AGENTS.md instructions\n\n<INSTRUCTIONS>internal</INSTRUCTIONS>",
+    "Another language model started to solve this problem and produced a summary",
+    "<environment_context>internal</environment_context>",
+    "<app-context>internal</app-context>",
+    "<skills_instructions>internal</skills_instructions>",
+    "<permissions instructions>internal</permissions instructions>",
+  ]) {
+    assert.equal(itemToBubble({ type: "response_item", payload: {
+      type: "message", role: "user", content: [{ type: "input_text", text }],
+    }}), null);
+  }
+});
+
+test("旧版 event_msg 与 response_item 双写消息跨工具事件仍只展示一次", () => {
+  const { isDuplicateTranscriptBubble } = renderFilter();
+  const previous = { cls: "assistant", text: "完成了", origin: "response", ordinal: 20 };
+  assert.equal(isDuplicateTranscriptBubble(previous, { cls: "assistant", text: "完成了", origin: "event" }, { ordinal: 21 }), true);
+  assert.equal(isDuplicateTranscriptBubble(previous, { cls: "assistant", text: "完成了", origin: "event" }, { ordinal: 57 }), true);
+  assert.equal(isDuplicateTranscriptBubble(previous, { cls: "assistant", text: "完成了", origin: "event" }, { ordinal: 90 }), false);
+  assert.equal(isDuplicateTranscriptBubble(previous, { cls: "assistant", text: "完成了", origin: "response" }, { ordinal: 21 }), false);
+  assert.ok(webSource.indexOf("isDuplicateTranscriptBubble(app.lastTranscriptBubble")
+    < webSource.indexOf("if (!shouldRenderTranscriptBubble(bubble, live)) return;"));
+});
+
+test("event user_message 的内部宿主上下文不会混入对话", () => {
+  const { itemToBubble } = messageSandbox();
+  assert.equal(itemToBubble({ type: "event_msg", payload: {
+    type: "user_message", message: "<app-context>internal</app-context>",
+  }}), null);
+});
+
+test("同一句用户消息只有 event/response 双写时才合并，用户连续追问不会被吞", () => {
+  const { isDuplicateTranscriptBubble } = renderFilter();
+  const prior = { cls: "user", text: "？", origin: "response", ordinal: 100 };
+  assert.equal(isDuplicateTranscriptBubble(prior, { cls: "user", text: "？", origin: "event" }, { ordinal: 101 }), true);
+  assert.equal(isDuplicateTranscriptBubble(prior, { cls: "user", text: "？", origin: "response" }, { ordinal: 102 }), false);
+});
+
+test("加载更早历史按新增高度补偿滚动位置", () => {
+  const { earlierRestoreY } = renderFilter();
+  assert.equal(earlierRestoreY({ scrollY: 0, scrollHeight: 2000 }, 5000), 3000);
+  assert.equal(earlierRestoreY({ scrollY: 240, scrollHeight: 2000 }, 5000), 3240);
+  assert.equal(earlierRestoreY({ scrollY: 120, scrollHeight: 3000 }, 2500), 120);
+  assert.match(webSource, /const requestedLimit = Math\.min\(5000, app\.histLimit \+ 500\)/);
+  assert.doesNotMatch(webSource, /app\.histLimit = Math\.min\(5000, app\.histLimit \+ 500\)/);
 });
 
 test("PWA 会绕过缓存检查新版前端并在 Service Worker 接管后刷新", () => {
   const swSource = readFileSync(new URL("../web/sw.js", import.meta.url), "utf8");
-  assert.match(swSource, /const CACHE = "pocket-agent-shell-v8"/);
+  assert.match(swSource, /const CACHE = "pocket-agent-shell-v9"/);
   assert.match(swSource, /fetch\(request, \{ cache: "no-store" \}\)/);
   assert.match(webSource, /register\("sw\.js", \{ updateViaCache: "none" \}\)/);
   assert.match(webSource, /addEventListener\("controllerchange"/);
