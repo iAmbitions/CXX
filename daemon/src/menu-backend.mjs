@@ -58,8 +58,8 @@ export function status(deps) {
 // —— 检查更新 ——
 // 查 GitHub Releases 最新 tag 与自身版本比对。托盘只拿结论：update 为真就引导去下载页。
 // 网络失败（超时/离线/被墙）返回 error + 发布页兜底链接，托盘可让用户手动打开看看。
-const RELEASES_API = "https://api.github.com/repos/focuxdot/CXX/releases/latest";
-const RELEASES_PAGE = "https://github.com/focuxdot/CXX/releases/latest";
+const RELEASES_API = "https://api.github.com/repos/iAmbitions/CXX/releases/latest";
+const RELEASES_PAGE = "https://github.com/iAmbitions/CXX/releases/latest";
 
 // 纯函数：把 API 响应整形成托盘要的结论（单测覆盖这里，网络层不掺和）。
 export function shapeUpdateResult(current, release) {
