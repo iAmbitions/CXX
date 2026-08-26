@@ -162,6 +162,51 @@ export function sanitizeTurnOptions(raw) {
   return Object.keys(out).length ? out : undefined;
 }
 
+const TRANSCRIPT_TEXT_BUDGET = 12_000;
+
+function clippedTranscriptText(value, limit = TRANSCRIPT_TEXT_BUDGET) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, limit)}\n\n…` : text;
+}
+
+// 单条 rollout 偶尔会因长回复/长粘贴超过 relay 帧预算。不能把整条 message 换成
+// 空占位，否则手机端会直接丢失用户问题或 Agent 最终回答；保留可读文本前缀和图片引用。
+export function fitRolloutItemForTransport(item, maxChars = 48_000) {
+  if (JSON.stringify(item).length <= maxChars) return item;
+  const p = item?.payload;
+  if (p?.type === "message" && Array.isArray(p.content)) {
+    let remaining = TRANSCRIPT_TEXT_BUDGET;
+    const content = p.content.map((part) => {
+      const field = ["text", "output_text", "input_text"].find((key) => typeof part?.[key] === "string");
+      if (field) {
+        const value = remaining > 0 ? clippedTranscriptText(part[field], remaining) : "";
+        remaining = Math.max(0, remaining - value.length);
+        return { type: part?.type, [field]: value };
+      }
+      // extractImages 已把大图抽成 imageRef。压缩消息时只保留前端真正会消费的引用，
+      // 丢掉宿主附带的巨大 metadata，避免它把仍然可读的回答再次挤成空占位。
+      if (part?.imageRef) return { type: part.type, imageRef: part.imageRef };
+      return null;
+    }).filter(Boolean);
+    const compact = {
+      timestamp: item.timestamp, ordinal: item.ordinal, type: item.type,
+      payload: { type: p.type, role: p.role, phase: p.phase, content, transportClipped: true },
+    };
+    if (JSON.stringify(compact).length <= maxChars) return compact;
+  }
+  if (item?.type === "event_msg" && ["user_message", "agent_message"].includes(p?.type)
+      && typeof p.message === "string") {
+    return {
+      timestamp: item.timestamp, ordinal: item.ordinal, type: item.type,
+      payload: { type: p.type, message: clippedTranscriptText(p.message), transportClipped: true },
+    };
+  }
+  return {
+    timestamp: item?.timestamp, ordinal: item?.ordinal, type: item?.type,
+    payload: { type: p?.type ?? item?.type, truncated: true },
+  };
+}
+
 export function extractImages(item, sessionId) {
   // Claude entries carry the Anthropic Messages shape (message.content blocks, no
   // payload). Pasted images arrive as { type:"image", source:{ type:"base64",
@@ -1583,15 +1628,8 @@ export class ClientSession {
     for (const item of items) {
       let entry = extractImages(item, sessionId); // 大图抽出缓存（记来源会话），条目瘦身后再做截断判断
       if (imgIds) collectImageRefs(entry, imgIds);
+      entry = fitRolloutItemForTransport(entry, MAX_ITEM_CHARS);
       let serialized = JSON.stringify(entry);
-      if (serialized.length > MAX_ITEM_CHARS) {
-        entry = {
-          timestamp: item.timestamp,
-          type: item.type,
-          payload: { type: item.payload?.type ?? item.type, truncated: true },
-        };
-        serialized = JSON.stringify(entry);
-      }
       if (size + serialized.length > MAX_CHUNK_CHARS && chunk.length > 0) flush();
       chunk.push(entry);
       size += serialized.length;
