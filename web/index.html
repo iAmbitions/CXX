@@ -771,6 +771,30 @@ try {
   .qtag { font-size: 11px; color: var(--dim); margin-top: 3px; }
   .msg.queued { opacity: .8; cursor: pointer; }
 
+  /* 待发送队列：对标 Codex 的独立消息列表，避免把“下一轮要发的内容”混在滚动对话里。 */
+  #queuepanel { display: none; max-width: 760px; margin: 0 auto 6px; background: var(--raised);
+                border: 1px solid var(--border); border-radius: 15px; overflow: hidden;
+                box-shadow: 0 3px 14px rgba(0,0,0,.12); }
+  #queuepanel.on { display: block; }
+  .qhead { display: flex; align-items: center; gap: 8px; padding: 8px 11px 7px;
+           color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--border); }
+  .qhead .qbadge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px;
+                   height: 18px; padding: 0 5px; border-radius: 9px; color: var(--accent);
+                   background: var(--accent-bg); font-variant-numeric: tabular-nums; }
+  .qrow { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 8px 8px 8px 11px;
+          border-bottom: 1px solid var(--border); }
+  .qrow:last-child { border-bottom: none; }
+  .qdrag { flex: none; color: var(--dim); font-size: 16px; line-height: 1; }
+  .qbody { flex: 1; min-width: 0; cursor: pointer; }
+  .qtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 14px; }
+  .qmeta { margin-top: 2px; color: var(--dim); font-size: 11px; }
+  .qactions { display: flex; flex: none; align-items: center; gap: 2px; }
+  .qactions button { width: 28px; height: 28px; border: none; border-radius: 7px; background: none;
+                     color: var(--dim); font: inherit; font-size: 16px; cursor: pointer; }
+  .qactions button:active { background: var(--sunken); color: var(--text); }
+  .qactions button:disabled { opacity: .28; cursor: default; }
+  .qactions .qdelete { color: var(--err); }
+
   /* 字体两档：默认「常规」即上面的既有字号；data-font="large" 把阅读面（正文/列表/输入/审批）
      整体调大约一号，界面骨架（图标、按钮、间距）不动。上面新增显式 font-size 的阅读元素时记得同步。 */
   :root[data-font="large"] body { font-size: 19px; }
@@ -1282,6 +1306,7 @@ try {
     <button data-act="paste"><span class="mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span><span data-i18n="plus.paste">粘贴图片</span></button>
   </div>
   <div id="quickcommandbar" data-i18n-aria="a11y.quick_commands" aria-label="快捷指令"></div>
+  <div id="queuepanel" aria-live="polite"></div>
   <div id="card">
     <div id="attachrow"></div>
     <div id="suggest"></div>
@@ -1505,6 +1530,14 @@ const I18N = {
     "banner.send_fail": "发送失败：{0}",
     "banner.oldremote_image": "电脑端 Remote 程序是旧版本，不支持发送图片——在电脑上重启它即可",
     "echo.queued": "本轮结束后发送 · 点按撤回",
+    "queue.title": "待发送队列",
+    "queue.count": "{0} 条",
+    "queue.images": "{0} 张图片",
+    "queue.edit": "修改消息",
+    "queue.up": "上移",
+    "queue.down": "下移",
+    "queue.delete": "删除",
+    "queue.edit_prompt": "修改待发送消息（清空文字可仅保留图片）：",
     "a11y.removeimg": "移除图片",
     "banner.offline_goal": "电脑离线，暂时无法设定目标",
     "prompt.goal": "会话目标（ChatGPT 会持续朝它推进；清空则移除）：",
@@ -1902,6 +1935,14 @@ const I18N = {
     "banner.send_fail": "Send failed: {0}",
     "banner.oldremote_image": "The computer's Remote is an old version that can't send images — restart it on the computer",
     "echo.queued": "Sent after this turn · tap to undo",
+    "queue.title": "Queued messages",
+    "queue.count": "{0} items",
+    "queue.images": "{0} image(s)",
+    "queue.edit": "Edit message",
+    "queue.up": "Move up",
+    "queue.down": "Move down",
+    "queue.delete": "Delete",
+    "queue.edit_prompt": "Edit queued message (clear text to keep only images):",
     "a11y.removeimg": "Remove image",
     "banner.offline_goal": "Computer offline — can't set a goal right now",
     "prompt.goal": "Session goal (ChatGPT keeps working toward it; clear to remove):",
@@ -4012,6 +4053,7 @@ const app = {
   histLimit: 500,          // 当前会话回填的 rollout 条数（下拉一次 +500，与 daemon SNAPSHOT_MAX_ITEMS 对齐）
   histTotal: 0,            // 该会话 rollout 总条数（daemon 随快照下发；> histLimit 即"上面还有更早"）
   loadingEarlier: false,   // 正在加载更早历史（snapshot 回来时改为锚定滚动，不落底）
+  snapshotRendering: false, // 历史快照回放中：task_complete 不得误触发已恢复队列的自动发送
   earlierAnchor: null,     // 加载前滚动位置 {scrollY}，加载完成后恢复，避免跳到最新消息
   homeScrollY: 0,          // 离开首页进会话前的 window 滚动位；closeSession 返回时复原，避免首页跳动
   approvals: new Map(),    // approvalKey -> 请求参数（全局待审批注册表）
@@ -5792,6 +5834,9 @@ async function resumeCurrentWatch() {
 }
 
 async function openSession(id, title, opts = {}) {
+  // 切换会话前先把上一会话的待发队列落盘；否则直接从通知/列表打开另一会话时，
+  // 内存里的队列会被下面的 app.queue = [] 静默丢掉。
+  if (app.currentId && app.currentId !== id) persistQueue(app.currentId);
   // 手机系统返回键/右滑返回走浏览器 history：从列表进会话时压一条历史，
   // 这样系统返回会触发 popstate 回首页，而不是把整个页面/PWA 弹掉。
   // 已在会话内（如右上角新建会话）不重复压栈——始终只留一条“会话→首页”的返回。
@@ -5836,6 +5881,7 @@ async function openSession(id, title, opts = {}) {
   $("input").value = app.drafts.get(id) ?? ""; // 恢复本会话的未发送草稿
   app.attachments = [];
   app.queue = [];
+  if (!opts.draft) restoreQueue();
   app.suppressUserImages = 0;
   renderAttachments();
   setPlanMode(false); // 计划模式是会话级选择，不跨会话
@@ -5868,7 +5914,10 @@ async function openSession(id, title, opts = {}) {
     $("log").innerHTML = "";
     app.histTotal = cached.total;
     setHistoryLoadedCount(cached.items.length);
-    renderInto(cached.items);
+    app.snapshotRendering = true;
+    try { renderInto(cached.items); }
+    finally { app.snapshotRendering = false; }
+    renderQueuedBubbles();
     renderApprovals(); // 清 log 重渲染后内嵌审批卡重挂
     scrollToBottom();
     updateEarlierHint();
@@ -5884,6 +5933,7 @@ async function openSession(id, title, opts = {}) {
       app.replayMode = true;
       if (typeof r.total === "number") app.histTotal = r.total;
     }
+    // 自动补发要等完整快照回放完：历史里的 task_complete 不能被当成当前轮次结束。
   } catch (err) {
     // 被顶替的旧 watch（快速切换/重开同一会话）以 409 失败：新 watch 已接管，静默即可。
     // 注意 409 不能只靠 id !== currentId 判——"退出又秒开同一会话"时 id 相同。
@@ -5907,14 +5957,15 @@ async function closeSession() {
   if (backgroundWatchTimer) clearTimeout(backgroundWatchTimer);
   backgroundWatchTimer = null;
   backgroundWatchSuspended = false;
-  // 未发送的草稿存起来（排队未发出的文本一并并入），回来接着写；不带进下一个会话
+  // 草稿仅是未点发送的输入；已排队消息必须原样保留，待下次回到该会话且上一轮
+  // 已结束后自动继续发送，不能降级为输入框里的普通草稿。
   const wasDraft = isDraftSession();
   if (app.currentId && !wasDraft) {
-    const queued = app.queue.map((q) => q.text).filter(Boolean);
-    app.drafts.set(app.currentId,
-      [$("input").value, ...queued].filter((s) => s.trim()).join("\n"));
+    app.drafts.set(app.currentId, $("input").value);
+    persistQueue();
   }
   app.queue = [];
+  renderQueuePanel();
   app.attachments = [];
   renderAttachments();
   $("input").value = "";
@@ -5988,7 +6039,7 @@ function setRunning(running, driver = "daemon", startAt) {
   if (!running) { clearTimeout(app.desktopIdle); app.desktopIdle = null; } // 收尾同时撤掉 tail 空闲兜底
   updateStatusStrip();
   updateActLine();
-  if (!running) flushQueue();
+  if (!running && !app.snapshotRendering) flushQueue();
 }
 
 // rollout tail 里的轮次事件：桌面 GUI 驱动的会话没有 live 事件，
@@ -6323,7 +6374,7 @@ async function sendMessage() {
   await dispatch(text, atts);
 }
 
-async function dispatch(text, atts) {
+async function dispatch(text, atts, { fromQueue = false } = {}) {
   const originId = app.currentId;
   const originDraft = isDraftSession() ? { ...app.draft } : null;
   const stillOnOrigin = () => app.view === "session" && app.currentId === originId;
@@ -6340,63 +6391,218 @@ async function dispatch(text, atts) {
     const options = turnOptions(); // 按轮权限/模型 override（默认不传，沿用电脑配置）
     if (originDraft) {
       const res = await startDraftSession(originDraft, text, images, options);
-      if (!stillOnOrigin()) return; // 用户已切到别的会话/草稿：不把旧请求结果应用到当前页
+      if (!stillOnOrigin()) return true; // 请求已被接受，只是不再改动已切走的视图
       await promoteDraftToSession(res.threadId, originDraft.cwd);
-      return;
+      return true;
     }
     await app.session.request("session.send", {
       sessionId: originId, text,
       images: images.length ? images : undefined,
       options,
     }, 90000);
-    if (!stillOnOrigin()) return;
+    if (!stillOnOrigin()) return true;
     if (app.pendingWatch) {
       // 空会话首条消息已发出 → rollout 文件已生成，现在接入流式与历史
       app.pendingWatch = false;
       try { await app.session.request("session.watch", { sessionId: originId, wt: newWatchToken() }); }
       catch (e) { if (e.code !== 409) showBanner(t("banner.attach_fail", e.message)); } // 409=已被新 watch 接管
     }
+    return true;
   } catch (err) {
-    if (!stillOnOrigin()) return;
+    if (!stillOnOrigin()) return false;
     setRunning(false);
     dropEcho(echo);
-    const input = $("input");
-    if (text && !input.value.trim()) { // 失败不吞输入，放回输入框（但不覆盖此间新输入的内容）
-      input.value = text;
-      autoGrow();
-    }
-    if (atts.length && !app.attachments.length) {
-      app.attachments = atts;
-      renderAttachments();
+    if (!fromQueue) {
+      const input = $("input");
+      if (text && !input.value.trim()) { // 失败不吞输入，放回输入框（但不覆盖此间新输入的内容）
+        input.value = text;
+        autoGrow();
+      }
+      if (atts.length && !app.attachments.length) {
+        app.attachments = atts;
+        renderAttachments();
+      }
     }
     updateSendState();
     showBanner(/未知方法/.test(err.message)
       ? t("banner.oldremote_image")
       : t("banner.send_fail", err.message));
+    return false;
   }
 }
 
 // —— 运行中排队：轮次结束（setRunning(false)）后逐条发出 ——
+// 队列必须跨页面退出保存。手机浏览器会随时冻结/回收页面，单靠 app.queue 的内存数组
+// 会让用户看见“已排队”，回来却没有任何消息继续发出。
+const QUEUE_STORE_VERSION = 1;
+const QUEUE_STORE_MAX_ITEMS = 50;
+
+function queueStoreKey(sessionId = app.currentId) {
+  const daemonId = app.session?.info?.id;
+  if (!daemonId || !sessionId || app.isViewer || isDraftSession()) return null;
+  return `czr-queue:${daemonId}:${app.agent || "codex"}:${sessionId}`;
+}
+
+function normalizedQueuedAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_ATTACH).flatMap((a) => {
+    if (!a || typeof a.b64 !== "string" || !a.b64 || a.b64.length > 12 * 1024 * 1024) return [];
+    const mime = typeof a.mime === "string" && /^image\/[a-z0-9.+-]+$/i.test(a.mime)
+      ? a.mime : "image/png";
+    return [{ b64: a.b64, mime }];
+  });
+}
+
+function serializedQueue() {
+  return app.queue.slice(0, QUEUE_STORE_MAX_ITEMS).flatMap((q) => {
+    const text = typeof q?.text === "string" ? q.text.trim().slice(0, 64_000) : "";
+    const atts = normalizedQueuedAttachments(q?.atts);
+    return text || atts.length ? [{ text, atts }] : [];
+  });
+}
+
+function persistQueue(sessionId = app.currentId) {
+  const key = queueStoreKey(sessionId);
+  if (!key) return;
+  const items = serializedQueue();
+  try {
+    if (!items.length) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ v: QUEUE_STORE_VERSION, items }));
+  } catch {
+    // 图片队列可能超过浏览器 localStorage 配额。退化为至少保住文字，不让整条待发消息消失。
+    try {
+      const textOnly = items.map(({ text }) => ({ text, atts: [] })).filter((q) => q.text);
+      if (textOnly.length) localStorage.setItem(key, JSON.stringify({ v: QUEUE_STORE_VERSION, items: textOnly }));
+    } catch {}
+  }
+}
+
+function restoreQueue() {
+  const key = queueStoreKey();
+  if (!key) return;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch {}
+  if (saved?.v !== QUEUE_STORE_VERSION || !Array.isArray(saved.items)) return;
+  app.queue = saved.items.slice(0, QUEUE_STORE_MAX_ITEMS).flatMap((q) => {
+    const text = typeof q?.text === "string" ? q.text.trim().slice(0, 64_000) : "";
+    const atts = normalizedQueuedAttachments(q?.atts);
+    return text || atts.length ? [{ text, atts, el: null }] : [];
+  });
+  // 清掉无效/过期结构；正常队列立即按当前结构回写，方便以后升级格式。
+  persistQueue();
+}
+
+function queuePreview(q) {
+  const text = String(q?.text || "").replace(/\s+/g, " ").trim();
+  if (text) return text;
+  return q?.atts?.length ? t("queue.images", q.atts.length) : "…";
+}
+
+function editQueuedMessage(q) {
+  const next = prompt(t("queue.edit_prompt"), q.text || "");
+  if (next === null) return;
+  const text = next.trim();
+  if (!text && !q.atts?.length) {
+    removeQueuedMessage(q);
+    return;
+  }
+  q.text = text;
+  persistQueue();
+  renderQueuePanel();
+}
+
+function removeQueuedMessage(q) {
+  const i = app.queue.indexOf(q);
+  if (i === -1) return;
+  app.queue.splice(i, 1);
+  persistQueue();
+  renderQueuePanel();
+}
+
+function moveQueuedMessage(q, delta) {
+  const from = app.queue.indexOf(q);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= app.queue.length) return;
+  [app.queue[from], app.queue[to]] = [app.queue[to], app.queue[from]];
+  persistQueue();
+  renderQueuePanel();
+}
+
+function queueButton(label, title, onClick, disabled = false, className = "") {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = label;
+  btn.title = title;
+  btn.setAttribute("aria-label", title);
+  btn.disabled = disabled;
+  if (className) btn.className = className;
+  btn.onclick = onClick;
+  return btn;
+}
+
+function renderQueuePanel() {
+  const panel = $("queuepanel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  panel.classList.toggle("on", app.queue.length > 0 && app.view === "session" && !app.isViewer);
+  if (!app.queue.length || app.view !== "session" || app.isViewer) return;
+
+  const head = document.createElement("div");
+  head.className = "qhead";
+  const title = document.createElement("span");
+  title.textContent = t("queue.title");
+  const badge = document.createElement("span");
+  badge.className = "qbadge";
+  badge.textContent = String(app.queue.length);
+  const count = document.createElement("span");
+  count.textContent = t("queue.count", app.queue.length);
+  head.append(title, badge, count);
+  panel.appendChild(head);
+
+  app.queue.forEach((q, index) => {
+    const sending = flushing && index === 0;
+    const row = document.createElement("div");
+    row.className = "qrow";
+    const drag = document.createElement("span");
+    drag.className = "qdrag";
+    drag.textContent = "↳";
+    const body = document.createElement("div");
+    body.className = "qbody";
+    body.title = t("queue.edit");
+    body.onclick = () => { if (!sending) editQueuedMessage(q); };
+    const text = document.createElement("div");
+    text.className = "qtext";
+    text.textContent = queuePreview(q);
+    body.appendChild(text);
+    if (q.atts?.length) {
+      const meta = document.createElement("div");
+      meta.className = "qmeta";
+      meta.textContent = t("queue.images", q.atts.length);
+      body.appendChild(meta);
+    }
+    const actions = document.createElement("div");
+    actions.className = "qactions";
+    actions.append(
+      queueButton("✎", t("queue.edit"), () => editQueuedMessage(q), sending),
+      queueButton("↑", t("queue.up"), () => moveQueuedMessage(q, -1), sending || index === 0),
+      queueButton("↓", t("queue.down"), () => moveQueuedMessage(q, 1), sending || index === app.queue.length - 1),
+      queueButton("⌫", t("queue.delete"), () => removeQueuedMessage(q), sending, "qdelete"),
+    );
+    row.append(drag, body, actions);
+    panel.appendChild(row);
+  });
+}
+
+// 历史快照以前会清空队列的乐观气泡；现在队列是独立面板，保留旧函数名以兼容各回填路径。
+function attachQueuedBubble() { renderQueuePanel(); }
+function renderQueuedBubbles() { renderQueuePanel(); }
+
 function enqueue(text, atts) {
-  const msg = echoBubble(text, atts);
-  msg.classList.add("queued");
-  setEchoNote(msg, t("echo.queued"));
-  $("log").appendChild(msg);
-  scrollToBottom();
-  const q = { text, atts, el: msg };
-  msg.onclick = () => { // 撤回：内容放回输入框/附件区
-    const i = app.queue.indexOf(q);
-    if (i === -1) return;
-    app.queue.splice(i, 1);
-    msg.remove();
-    const input = $("input");
-    if (text) input.value = input.value.trim() ? `${input.value}\n${text}` : text;
-    app.attachments = app.attachments.concat(atts).slice(0, MAX_ATTACH);
-    renderAttachments();
-    autoGrow();
-    updateSendState();
-  };
+  const q = { text, atts, el: null };
   app.queue.push(q);
+  persistQueue();
+  renderQueuePanel();
+  scrollToBottom();
 }
 
 let flushing = false;
@@ -6404,11 +6610,21 @@ async function flushQueue() {
   if (flushing || !app.queue.length) return;
   if (app.view !== "session" || !app.currentId) return;
   if (net.link !== "ok" || net.daemon === false) return; // 离线保持排队
+  const sessionId = app.currentId;
+  const q = app.queue[0]; // 未获 daemon 确认前不 shift，退出/断线后还能可靠重试
   flushing = true;
-  const q = app.queue.shift();
-  q.el.remove();
+  q.el?.remove();
   try {
-    await dispatch(q.text, q.atts); // 失败时 dispatch 已回填输入框；剩余的继续排队
+    const accepted = await dispatch(q.text, q.atts, { fromQueue: true });
+    if (accepted) {
+      if (app.queue[0] === q) app.queue.shift();
+      persistQueue(sessionId);
+      renderQueuePanel();
+    } else if (app.currentId === sessionId && app.view === "session") {
+      // 发送失败时留在队列并重新显示，不降级为会在刷新后丢失的输入框草稿。
+      renderQueuePanel();
+      persistQueue(sessionId);
+    }
   } finally {
     flushing = false;
   }
@@ -8435,8 +8651,11 @@ function renderFullSnapshotItems(items, { snapshotEnd = false, loadedCount = nul
   app.seenImages.clear(); // 快照重放会重发同批 imageRef
   app.stream = null; // 元素已随 log 清空
   app.proc = null;
-  renderInto(items);
+  app.snapshotRendering = true;
+  try { renderInto(items); }
+  finally { app.snapshotRendering = false; }
   for (const e of app.echoes) $("log").appendChild(e.el); // 未被确认的乐观气泡重新挂上
+  renderQueuedBubbles(); // 快照会清空 DOM；把已落盘的待发队列重新挂回末尾
   renderApprovals(); // snapshot 清空了 log，内嵌审批卡重挂
   if (!$("log").childElementCount) {
     // 新会话空态：给一句引导而不是一片空白（有 id，首条消息渲染时由 renderInto 清掉）
@@ -8449,6 +8668,9 @@ function renderFullSnapshotItems(items, { snapshotEnd = false, loadedCount = nul
   else scrollToBottom();
   updateEarlierHint();
   updateReplayMore();
+  // 完整快照已按最后一个任务边界更新 app.running。已结束时没有新的 live 完成事件，
+  // 在这里恢复并发送持久化队列；仍在运行则等待真正的 turn/completed。
+  if (snapshotEnd && !app.running) queueMicrotask(() => flushQueue());
 }
 
 function finishDeferredFullSnapshot(s) {
@@ -8687,6 +8909,7 @@ function openSheet() {
 }
 
 async function switchDaemon(id) {
+  persistQueue();
   const daemons = loadStore();
   const info = daemons[id];
   if (!info || info.id === app.session?.info.id) return;
@@ -10433,6 +10656,7 @@ async function main() {
   });
   // 页面被系统回收/导航离开时不等 15s；若异步发送来不及完成，daemon 端租约仍会兜底。
   window.addEventListener("pagehide", () => {
+    persistQueue();
     app.session?.pauseWatchRenewal();
     suspendCurrentWatch().catch(() => {});
   });
