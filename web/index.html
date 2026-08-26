@@ -795,9 +795,11 @@ try {
   .qactions { display: flex; flex: none; align-items: center; gap: 2px; }
   .qactions button { width: 28px; height: 28px; border: none; border-radius: 7px; background: none;
                      color: var(--dim); font: inherit; font-size: 16px; cursor: pointer; }
+  /* 能点击的操作必须有明确的可用态；只有单条队列无法移动的 ↑/↓ 保持淡灰。 */
+  .qactions button:not(:disabled) { color: var(--text); }
   .qactions button:active { background: var(--sunken); color: var(--text); }
   .qactions button:disabled { opacity: .28; cursor: default; }
-  .qactions .qdelete { color: var(--err); }
+  .qactions .qdelete:not(:disabled) { color: var(--err); }
 
   /* 字体两档：默认「常规」即上面的既有字号；data-font="large" 把阅读面（正文/列表/输入/审批）
      整体调大约一号，界面骨架（图标、按钮、间距）不动。上面新增显式 font-size 的阅读元素时记得同步。 */
@@ -1509,6 +1511,7 @@ const I18N = {
     "proj.archive": "归档 {0}",
     "proj.archive_folder": "归档文件夹",
     "list.loadmore": "加载更多",
+    "list.loadretry": "加载失败，点按重试",
     "proj.badge.appr": (n) => `${n} 待审批`,
     "proj.badge.run": (n) => `${n} 运行中`,
     "common.loading": "加载中…",
@@ -1650,7 +1653,7 @@ const I18N = {
     "expiry.expired": "已过期",
     "expiry.hours": "剩余 {0} 小时",
     "expiry.minutes": "剩余 {0} 分钟",
-    "share.oldremote": "电脑端 Remote 版本较旧，尚不支持围观分享。请先更新电脑端的口袋Agent。",
+    "share.oldremote": "电脑端 Remote 版本较旧，尚不支持围观分享。请先更新电脑端口袋Agent。",
     "share.linklabel": "围观链接（{0}）",
     "share.viewingN": "{0} 人正在围观",
     "project.actions.title": "项目操作",
@@ -1918,6 +1921,7 @@ const I18N = {
     "proj.archive": "Archive {0}",
     "proj.archive_folder": "Archive folder",
     "list.loadmore": "Load more",
+    "list.loadretry": "Couldn’t load. Tap to retry",
     "proj.badge.appr": (n) => `${n} pending`,
     "proj.badge.run": (n) => `${n} running`,
     "common.loading": "Loading…",
@@ -2105,7 +2109,7 @@ const I18N = {
     "share.tip": "Anyone with the link can watch. Revoke it here anytime.",
     "ob.title": "Connect your computer",
     "ob.intro": "Keep tabs on ChatGPT on your computer, live from your phone: watch progress, handle approvals, queue up what's next.",
-    "ob.step1": "On your computer, open Pocket Agent and click the Pocket Agent icon in the menu bar",
+    "ob.step1": "On your computer, open Pocket Agent and click its icon in the menu bar",
     "ob.step2": "Choose “Enable phone remote control,” then “Pair by QR”",
     "ob.step3": "Scan the code with your phone camera (or copy the link from the pairing page and open it on your phone)",
     "ob.note1": "Scanning pairs permanently; remove it anytime under “Paired devices” on the computer. Everything is end-to-end encrypted — the relay server can't read your session content.",
@@ -2268,8 +2272,9 @@ function loadDaemonInfo() {
   }
   if (hash.get("p")) {
     const payload = JSON.parse(new TextDecoder().decode(b64.from(hash.get("p"))));
+    const previousDeviceToken = loadStore()[payload.id]?.deviceToken || "";
     history.replaceState(null, "", location.pathname); // 配对码不留在地址栏
-    return { ...payload, fromPair: true };
+    return { ...payload, fromPair: true, previousDeviceToken };
   }
   // 观众态刷新恢复：hash 已被 replaceState 抹掉，凭据在本标签页的 sessionStorage 里
   try {
@@ -2555,7 +2560,7 @@ class Session {
       ws.onclose = () => { if (this.connEpoch === epoch) this.#onClose(); };
       // 首次用配对码，之后一律用设备令牌；带上本端协议版本
       const authParams = this.info.fromPair
-        ? { pairToken: this.info.tok, protocol: APP_PROTOCOL, name: deviceLabel(), clientId: clientId() }
+        ? { pairToken: this.info.tok, previousDeviceToken: this.info.previousDeviceToken || "", protocol: APP_PROTOCOL, name: deviceLabel(), clientId: clientId() }
         : { deviceToken: this.info.deviceToken, protocol: APP_PROTOCOL, name: deviceLabel(), clientId: clientId() };
       // 信封序号能力走加密信道协商（中继剥不掉）；旧 daemon 忽略未知参数。
       // img:1=接收图片推送流（观众不推——其通知帧走低优先级 outbox，大图会挤爆）
@@ -3315,6 +3320,20 @@ function cleanExecOutput(raw) {
   return { code: m ? Number(m[1]) : null, body: idx >= 0 ? raw.slice(idx + 8).replace(/^---\n/, "") : raw };
 }
 
+// Codex Desktop 会把附件清单和安全提示注入 user_message；控制端只展示用户真正输入的请求。
+// 仅识别完整的附件包装，避免误伤用户正文里普通的 “My request”。
+function normalizeUserMessage(text) {
+  const raw = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  if (!raw) return "";
+  const hasAttachmentEnvelope = /(?:^|\n)[ \t]*#{1,6}[ \t]+Files[ \t]+(?:mentioned|pasted)[ \t]+by[ \t]+the[ \t]+user[ \t]*:/i.test(raw);
+  if (!hasAttachmentEnvelope) return raw;
+  const requestHeading = /^[ \t]*#{1,6}[ \t]+My[ \t]+request[ \t]*:[ \t]*(?:\n|$)/gim;
+  let match = null;
+  for (const candidate of raw.matchAll(requestHeading)) match = candidate;
+  if (!match) return raw;
+  return raw.slice(match.index + match[0].length).trim();
+}
+
 function parseCodexDirectives(text) {
   const directives = [];
   const lines = String(text ?? "").split(/\r?\n/);
@@ -3349,7 +3368,8 @@ function itemToBubble(item) {
         const parsed = parseCodexDirectives(raw);
         return parsed.text ? { cls: "assistant", text: parsed.text, directives: parsed.directives } : null;
       }
-      return raw ? { cls: "user", text: raw } : null;
+      const text = normalizeUserMessage(raw);
+      return text ? { cls: "user", text } : null;
     }
     if (pt === "patch_apply_end") {
       const files = Object.entries(p.changes ?? {}).map(([path, c]) => ({
@@ -3385,7 +3405,7 @@ function itemToBubble(item) {
       if (refs.length) {
         if (p.role === "user") {
           const texts = p.content.map((c) => String(c?.text ?? c?.input_text ?? "").trim()).filter(Boolean);
-          return { cls: "user", text: texts.join("\n\n"), refs };
+          return { cls: "user", text: normalizeUserMessage(texts.join("\n\n")), refs };
         }
         return { cls: "images", refs, user: false };
       }
@@ -3426,7 +3446,10 @@ function itemToBubble(item) {
   const text = parsed.text;
   if (!text) return null;
   const kind = `${ty ?? ""}:${p?.type ?? ""}`;
-  if (/user/i.test(kind)) return { cls: "user", text };
+  if (/user/i.test(kind)) {
+    const userText = normalizeUserMessage(text);
+    return userText ? { cls: "user", text: userText } : null;
+  }
   if (/command|exec|shell/i.test(kind)) return { cls: "tool", icon: "$", label: text, detail: text, callId: null };
   if (/agent|assistant|message/i.test(kind)) return { cls: "assistant", text, directives: parsed.directives };
   return null; // 未知且非消息：不渲染，避免噪声
@@ -4057,7 +4080,7 @@ const app = {
   // —— 首页「项目优先 + 懒加载」数据模型（见 loadHome）——
   projects: [],            // projects.list 结果：全部项目的紧凑列表（一帧，与会话总量无关）
   projByCwd: new Map(),    // normCwd -> 项目条目（看板增量 O(1) 定位）
-  projSessions: new Map(), // normCwd -> {sessions,nextCursor,done,loading} 每项目会话懒加载缓存
+  projSessions: new Map(), // normCwd -> {sessions,nextCursor,done,loading,error} 每项目会话懒加载缓存
   headSessions: [],        // 首页第一页 sessions.list（无 cwd）：活跃会话 + 近端散聊天来源
   timeline: { sessions: [], cursor: null, done: false, loading: false }, // 时间线模式分页游标
   knownById: new Map(),    // id -> 会话（各来源合并；看板打补丁 / 目录标签 / 搜索的统一表）
@@ -4958,7 +4981,12 @@ function renderProjects(list, attnIds, q) {
       const rows = (cache?.sessions || []).filter((s) => !attnIds.has(s.id) && sessionMatches(s, q));
       for (const s of rows) list.appendChild(sessionRow(s, true));
       if (cache?.loading && !rows.length) list.appendChild(loadingRow());
-      else if (cache?.nextCursor) list.appendChild(loadMoreRow(() => ensureProjectLoaded(norm, p.cwd, { more: true })));
+      else if (cache?.error) {
+        const retryMore = cache.sessions.length > 0;
+        list.appendChild(loadRetryRow(() => ensureProjectLoaded(norm, p.cwd, retryMore ? { more: true } : { refresh: true })));
+      } else if (cache?.nextCursor) {
+        list.appendChild(loadMoreRow(() => ensureProjectLoaded(norm, p.cwd, { more: true })));
+      }
     }
   }
   // 散聊天：headSessions 里的非项目目录会话（近端一页），去重 attention。
@@ -5063,6 +5091,14 @@ function loadingRow() {
   return d;
 }
 
+function loadRetryRow(fn) {
+  const d = document.createElement("div");
+  d.className = "notice loadmore";
+  d.textContent = t("list.loadretry");
+  d.onclick = fn;
+  return d;
+}
+
 // 展开/折叠项目：展开即懒加载它的会话
 function toggleProject(norm, cwd) {
   if (app.expanded.has(norm)) app.expanded.delete(norm);
@@ -5074,32 +5110,40 @@ function toggleProject(norm, cwd) {
 // more=继续下一页；refresh=从头重拉（刷新时保持已展开项目内容）。
 async function ensureProjectLoaded(norm, cwd, { more = false, refresh = false } = {}) {
   let c = app.projSessions.get(norm);
-  if (!c) { c = { sessions: [], nextCursor: null, done: false, loading: false }; app.projSessions.set(norm, c); }
+  if (!c) {
+    c = { sessions: [], nextCursor: null, done: false, loading: false, error: null };
+    app.projSessions.set(norm, c);
+  }
   if (c.loading) return;
   if (refresh) { c.sessions = []; c.nextCursor = null; c.done = false; }
   else if (!more && c.sessions.length) return; // 已加载首页且非翻页：无需再拉
   if (c.done && !more) return;
   c.loading = true;
+  c.error = null;
   if (app.view === "list") renderList();
   const gen = app.listGen;
+  const session = app.session;
   try {
-    // Codex 的 thread/list 单页上限是 100。大项目若一次凑 1000/2000 条，需要 daemon
-    // 串行翻十几页，容易撞上手机端请求超时；到货后一次渲染近千行还会让移动端卡死。
-    // 一次只取引擎原生的一页，后续由「加载更多」显式续取。
-    const res = await app.session.request("sessions.list", { cwd, cursor: c.nextCursor ?? null, limit: 100 });
-    if (gen !== app.listGen) return; // 数据空间已切换（换电脑/换 agent）：旧 agent 的会话不入新模型
+    // daemon 直接从 projects.list 已建立的同一份项目索引分页，不再点击一次就重新扫描引擎。
+    // 单页 100 条，后续由「加载更多」显式续取，避免大项目一次渲染上千行卡住手机。
+    const res = await session.request("sessions.list", { cwd, cursor: c.nextCursor ?? null, limit: 100 });
+    if (gen !== app.listGen || session !== app.session || app.projSessions.get(norm) !== c) return;
     const batch = res?.sessions ?? [];
     const seen = new Set(c.sessions.map((s) => s.id));
-    for (const s of batch) if (s?.id && !seen.has(s.id)) c.sessions.push(s);
+    for (const item of batch) if (item?.id && !seen.has(item.id)) c.sessions.push(item);
     c.sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     c.nextCursor = res?.nextCursor ?? null;
     c.done = !c.nextCursor;
     ingestSessions(batch);
-  } catch {
-    // 保留已加载内容；用户可再点展开/加载更多重试
+  } catch (err) {
+    if (gen === app.listGen && session === app.session && app.projSessions.get(norm) === c) {
+      c.error = err?.message || t("list.loadretry");
+    }
   } finally {
     c.loading = false;
-    if (app.view === "list") renderList();
+    if (gen === app.listGen && session === app.session && app.projSessions.get(norm) === c && app.view === "list") {
+      renderList();
+    }
   }
 }
 
@@ -5567,18 +5611,21 @@ function resetListModel() {
 
 // 并发发出（同一 WS 管线，约 1 次往返），与会话总量无关。老 daemon 无 projects.list 时
 // 自动降级为全量翻页（fetchAllSessions）。
-async function loadHome() {
+async function loadHome({ fresh = false } = {}) {
   if (app.isViewer) return; // 观众无列表权限
+  // 从会话/终端返回首页时丢弃项目子列表缓存；否则 loadHome 虽刷新了项目摘要，
+  // 展开的项目仍会继续显示进入会话前的旧 sessions 数组。
+  if (fresh) app.projSessions.clear();
   const gen = app.listGen; // 数据空间代次：切电脑/切 agent 后本次结果作废（不入模型、不落快照）
   if (app.homeMode !== "legacy") {
     try {
       // head page 只取近端一页（散聊天区 + 排序用），必须小而快：它和 projects.list 一起
       // 眼加载——拉太多会拖慢/超时整个首页（曾误设 2000 导致首页加载不出来）。项目内会话由
-      // 展开时懒加载（limit 2000），与首页加载解耦、恒定 O(1) 往返。
+      // 展开时从同一项目索引懒加载（单页 100），与首页加载解耦、恒定 O(1) 往返。
       // 用 allSettled 而非 all：projects.list 是主内容（缓存、快），head page 是易超时的一环——
       // head page 失败只让散聊天区暂缺，绝不能拖垮整个首页。projects.list 失败才算首页失败。
       const [prR, hrR] = await Promise.allSettled([
-        app.session.request("projects.list", {}),
+        app.session.request("projects.list", fresh ? { fresh: true } : {}),
         app.session.request("sessions.list", { limit: 200 }),
       ]);
       if (gen !== app.listGen) return; // 旧 agent 的首页数据：丢弃，尤其不能存进新 agent 的快照键
@@ -5604,6 +5651,14 @@ async function loadHome() {
       ingestSessions(app.headSessions);
       saveBoardSnapshotSoon();
       if (app.view === "list") renderList();
+      if (fresh) {
+        // 保持用户的展开态，但每次回到列表都从刚刷新的项目索引重新取第一页。
+        // 不 await：列表先立即可用，各展开项目到货后各自重绘。
+        for (const p of app.projects) {
+          const norm = normSep(p.cwd);
+          if (app.expanded.has(norm)) ensureProjectLoaded(norm, p.cwd, { refresh: true }).catch(() => {});
+        }
+      }
       return;
     } catch (e) {
       if (!isUnknownMethodErr(e)) return; // 非"方法不存在"（超时/断网等）：保留旧渲染，下次再试
@@ -5624,8 +5679,8 @@ async function loadHome() {
 }
 
 // 兼容别名：既有调用点（看板节流、重连、关闭会话返回）统一走 loadHome
-async function refreshList() {
-  return loadHome();
+async function refreshList(options = {}) {
+  return loadHome(options);
 }
 
 // 看板变化时节流刷新（仅列表视图）
@@ -6020,7 +6075,7 @@ async function closeSession() {
   // 网络动作放到视图切换之后、且不阻塞返回：unwatch 只是通知 daemon 停止推流，
   // 就算失败也已离开会话；迟到的 live 事件因 currentId 已清空会被忽略。
   app.session.request("session.unwatch").catch(() => {});
-  await refreshList().catch(() => {});
+  await refreshList({ fresh: true }).catch(() => {});
   // 列表重建后内容高度可能变，再复位一次滚动位，确保首页稳稳停在离开前的位置
   window.scrollTo(0, app.homeScrollY || 0);
 }
@@ -8227,6 +8282,12 @@ function inputPh() {
   return t("input.ph").replace("ChatGPT", app.agent === "claude" ? "Claude" : "ChatGPT");
 }
 
+function shouldRenderTranscriptBubble(bubble, live = false) {
+  if (!bubble) return false;
+  // 已有对话只保留真正的对话和结果；内部命令/工具输出仅在当前实时执行时展示。
+  return live || (bubble.cls !== "tool" && bubble.cls !== "toolout");
+}
+
 function renderInto(items, live = false) {
   // Claude 会话：给 #log 挂 cl-inline，工具行走扁平（去背景条）终端式清单
   $("log").classList.toggle("cl-inline", app.agent === "claude");
@@ -8280,7 +8341,7 @@ function renderInto(items, live = false) {
   // Claude 全程内联（对标终端 scrollback）；ChatGPT 运行中也平铺显示，完成后统一折叠中间过程。
   const inline = app.agent === "claude";
   const emitBubbleNow = (bubble, sourceItem) => {
-    if (!bubble) return;
+    if (!shouldRenderTranscriptBubble(bubble, live)) return;
     let node = null;
     let toProc = false;
     if (bubble.cls === "user") {
@@ -10325,6 +10386,7 @@ function closeTerminalPageView() {
   updateStatusPill();
   updateHomeTab();
   refreshTerminals().catch(() => {});
+  refreshList({ fresh: true }).catch(() => {});
 }
 
 async function main() {
@@ -10705,9 +10767,24 @@ async function main() {
   window.addEventListener("online", () => {
     if (document.visibilityState === "visible") app.session?.ensureAlive();
   });
-  // 注册 Service Worker（PWA 离线壳）
+  // 注册 Service Worker（PWA 离线壳）。显式绕过 HTTP 缓存检查 sw.js；新版接管后
+  // 自动重载一次，避免主屏幕 PWA 长期停留在旧前端、继续展示已修复的历史噪音。
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloadingForUpdate = false;
+    if (hadController) {
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (reloadingForUpdate) return;
+        reloadingForUpdate = true;
+        location.reload();
+      });
+    }
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((registration) => {
+      registration.update().catch(() => {});
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") registration.update().catch(() => {});
+      });
+    }).catch(() => {});
   }
 
   // 通知深链 #s=<sessionId>：连上后直达该会话（在 loadDaemonInfo 之前解析，二者不共存）
