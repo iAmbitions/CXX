@@ -318,7 +318,7 @@ namespace CXX
         readonly System.Windows.Forms.Timer pairTimer;
         const int RemoteStartupTimeoutMs = 15000;
         const int RemoteStartupPollMs = 500;
-        const string SupportIssuesUrl = "https://github.com/focuxdot/CXX/issues";
+        const string SupportIssuesUrl = "https://github.com/iAmbitions/CXX/issues";
 
         static readonly Font FontBase = new Font("Microsoft YaHei", 9f);
         static readonly Font FontTitle = new Font("Microsoft YaHei", 14, FontStyle.Bold);
@@ -511,7 +511,7 @@ namespace CXX
             var t = new Thread(delegate()
             {
                 var res = Backend.Call("check-update");
-                string page = Backend.Str(res, "url") ?? "https://github.com/focuxdot/CXX/releases/latest";
+                string page = Backend.Str(res, "url") ?? "https://github.com/iAmbitions/CXX/releases/latest";
                 string current = Backend.Str(res, "current") ?? "?";
                 string err = Backend.Str(res, "error");
                 // 成功响应必带 latest；两者皆无 = daemon 没吐 JSON（版本过旧不认识
