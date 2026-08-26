@@ -776,8 +776,12 @@ try {
                 border: 1px solid var(--border); border-radius: 15px; overflow: hidden;
                 box-shadow: 0 3px 14px rgba(0,0,0,.12); }
   #queuepanel.on { display: block; }
-  .qhead { display: flex; align-items: center; gap: 8px; padding: 8px 11px 7px;
-           color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--border); }
+  .qhead { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 11px 7px;
+           color: var(--dim); font-size: 12px; border: none; border-bottom: 1px solid var(--border);
+           background: none; text-align: left; cursor: pointer; touch-action: manipulation; }
+  .qhead:active { background: var(--sunken); }
+  .qhead.collapsed { border-bottom: none; }
+  .qchevron { margin-left: auto; color: var(--dim); font-size: 15px; line-height: 1; }
   .qhead .qbadge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px;
                    height: 18px; padding: 0 5px; border-radius: 9px; color: var(--accent);
                    background: var(--accent-bg); font-variant-numeric: tabular-nums; }
@@ -1537,6 +1541,10 @@ const I18N = {
     "queue.up": "上移",
     "queue.down": "下移",
     "queue.delete": "删除",
+    "queue.collapse": "收起待发送队列",
+    "queue.expand": "展开待发送队列",
+    "queue.collapse_label": "收起",
+    "queue.expand_label": "展开",
     "queue.edit_prompt": "修改待发送消息（清空文字可仅保留图片）：",
     "a11y.removeimg": "移除图片",
     "banner.offline_goal": "电脑离线，暂时无法设定目标",
@@ -1942,6 +1950,10 @@ const I18N = {
     "queue.up": "Move up",
     "queue.down": "Move down",
     "queue.delete": "Delete",
+    "queue.collapse": "Collapse queued messages",
+    "queue.expand": "Expand queued messages",
+    "queue.collapse_label": "Collapse",
+    "queue.expand_label": "Expand",
     "queue.edit_prompt": "Edit queued message (clear text to keep only images):",
     "a11y.removeimg": "Remove image",
     "banner.offline_goal": "Computer offline — can't set a goal right now",
@@ -4061,6 +4073,7 @@ const app = {
   suppressUserImages: 0,   // 带图文字 echo 被文本确认后，吞掉随后单独到达的用户图片块
   attachments: [],         // 待发送的图片 {b64, mime}（最多 4 张）
   queue: [],               // 运行中排队的消息 {text, atts, el}，本轮结束后逐条发出
+  queueCollapsed: false,   // 待发送面板按会话记住收起态，避免长队列挤占对话阅读空间
   turnOpts: null,          // 按轮 override：{perm, model, modelName, effort}（localStorage 持久化）
   permState: null,         // 当前会话从 tail 读到的真实权限状态 {perm, label, raw, source}
   modelState: null,        // 当前会话从 tail 读到的真实模型状态 {id, name, effort}
@@ -5881,6 +5894,7 @@ async function openSession(id, title, opts = {}) {
   $("input").value = app.drafts.get(id) ?? ""; // 恢复本会话的未发送草稿
   app.attachments = [];
   app.queue = [];
+  app.queueCollapsed = false;
   if (!opts.draft) restoreQueue();
   app.suppressUserImages = 0;
   renderAttachments();
@@ -5965,6 +5979,7 @@ async function closeSession() {
     persistQueue();
   }
   app.queue = [];
+  app.queueCollapsed = false;
   renderQueuePanel();
   app.attachments = [];
   renderAttachments();
@@ -6467,12 +6482,12 @@ function persistQueue(sessionId = app.currentId) {
   const items = serializedQueue();
   try {
     if (!items.length) localStorage.removeItem(key);
-    else localStorage.setItem(key, JSON.stringify({ v: QUEUE_STORE_VERSION, items }));
+    else localStorage.setItem(key, JSON.stringify({ v: QUEUE_STORE_VERSION, collapsed: app.queueCollapsed === true, items }));
   } catch {
     // 图片队列可能超过浏览器 localStorage 配额。退化为至少保住文字，不让整条待发消息消失。
     try {
       const textOnly = items.map(({ text }) => ({ text, atts: [] })).filter((q) => q.text);
-      if (textOnly.length) localStorage.setItem(key, JSON.stringify({ v: QUEUE_STORE_VERSION, items: textOnly }));
+      if (textOnly.length) localStorage.setItem(key, JSON.stringify({ v: QUEUE_STORE_VERSION, collapsed: app.queueCollapsed === true, items: textOnly }));
     } catch {}
   }
 }
@@ -6483,6 +6498,7 @@ function restoreQueue() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch {}
   if (saved?.v !== QUEUE_STORE_VERSION || !Array.isArray(saved.items)) return;
+  app.queueCollapsed = saved.collapsed === true;
   app.queue = saved.items.slice(0, QUEUE_STORE_MAX_ITEMS).flatMap((q) => {
     const text = typeof q?.text === "string" ? q.text.trim().slice(0, 64_000) : "";
     const atts = normalizedQueuedAttachments(q?.atts);
@@ -6528,6 +6544,12 @@ function moveQueuedMessage(q, delta) {
   renderQueuePanel();
 }
 
+function toggleQueuePanel() {
+  app.queueCollapsed = !app.queueCollapsed;
+  persistQueue();
+  renderQueuePanel();
+}
+
 function queueButton(label, title, onClick, disabled = false, className = "") {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -6548,7 +6570,18 @@ function renderQueuePanel() {
   if (!app.queue.length || app.view !== "session" || app.isViewer) return;
 
   const head = document.createElement("div");
-  head.className = "qhead";
+  head.className = `qhead${app.queueCollapsed ? " collapsed" : ""}`;
+  head.setAttribute("role", "button");
+  head.setAttribute("tabindex", "0");
+  head.setAttribute("aria-expanded", String(!app.queueCollapsed));
+  head.title = t(app.queueCollapsed ? "queue.expand" : "queue.collapse");
+  head.setAttribute("aria-label", head.title);
+  head.onclick = toggleQueuePanel;
+  head.onkeydown = (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleQueuePanel();
+  };
   const title = document.createElement("span");
   title.textContent = t("queue.title");
   const badge = document.createElement("span");
@@ -6556,8 +6589,15 @@ function renderQueuePanel() {
   badge.textContent = String(app.queue.length);
   const count = document.createElement("span");
   count.textContent = t("queue.count", app.queue.length);
-  head.append(title, badge, count);
+  const chevron = document.createElement("span");
+  chevron.className = "qchevron";
+  chevron.textContent = app.queueCollapsed
+    ? `${t("queue.expand_label")} ⌄`
+    : `${t("queue.collapse_label")} ⌃`;
+  chevron.setAttribute("aria-hidden", "true");
+  head.append(title, badge, count, chevron);
   panel.appendChild(head);
+  if (app.queueCollapsed) return;
 
   app.queue.forEach((q, index) => {
     const sending = flushing && index === 0;
