@@ -25,8 +25,8 @@ function messageSandbox() {
 
 function renderFilter() {
   const source = sourceBetween("function shouldRenderTranscriptBubble(", "function renderInto(");
-  const sandbox = {};
-  vm.runInNewContext(`${source}\nglobalThis.api = { shouldRenderTranscriptBubble, isDuplicateTranscriptBubble, earlierRestoreY };`, sandbox);
+  const sandbox = { app: { transcriptOrdinal: 0 } };
+  vm.runInNewContext(`${source}\nglobalThis.api = { shouldRenderTranscriptBubble, isDuplicateTranscriptBubble, shouldMergeTranscriptUserBubbles, earlierRestoreY, sourceOrdinalFor };`, sandbox);
   return sandbox.api;
 }
 
@@ -144,11 +144,38 @@ test("event user_message 的内部宿主上下文不会混入对话", () => {
   }}), null);
 });
 
-test("同一句用户消息只有 event/response 双写时才合并，用户连续追问不会被吞", () => {
-  const { isDuplicateTranscriptBubble } = renderFilter();
+test("缺少 daemon ordinal 时使用连续本地顺序号，避免无限距离误去重", () => {
+  const { sourceOrdinalFor, isDuplicateTranscriptBubble } = renderFilter();
+  const first = sourceOrdinalFor({ type: "event_msg" });
+  for (let i = 0; i < 70; i++) sourceOrdinalFor({ type: "response_item" });
+  const later = sourceOrdinalFor({ type: "response_item" });
+  assert.equal(first, 0);
+  assert.equal(later, 71);
+  assert.equal(isDuplicateTranscriptBubble(
+    { cls: "user", text: "重复问题", origin: "event", ordinal: first },
+    { cls: "user", text: "重复问题", origin: "response" },
+    { ordinal: later },
+  ), false);
+});
+
+test("null ordinal 也按缺失处理，不会让所有记录都落到顺序号 0", () => {
+  const { sourceOrdinalFor } = renderFilter();
+  assert.equal(sourceOrdinalFor({ type: "event_msg", ordinal: null }), 0);
+  assert.equal(sourceOrdinalFor({ type: "response_item", ordinal: null }), 1);
+  assert.equal(sourceOrdinalFor({ type: "response_item", ordinal: "" }), 2);
+});
+
+test("同一句用户消息只在邻近 event/response 双写时合并，连续追问不会被吞", () => {
+  const { isDuplicateTranscriptBubble, shouldMergeTranscriptUserBubbles } = renderFilter();
   const prior = { cls: "user", text: "？", origin: "response", ordinal: 100 };
-  assert.equal(isDuplicateTranscriptBubble(prior, { cls: "user", text: "？", origin: "event" }, { ordinal: 101 }), true);
-  assert.equal(isDuplicateTranscriptBubble(prior, { cls: "user", text: "？", origin: "response" }, { ordinal: 102 }), false);
+  const same = { cls: "user", text: "？", origin: "event" };
+  assert.equal(isDuplicateTranscriptBubble(prior, same, { ordinal: 101 }), true);
+  assert.equal(isDuplicateTranscriptBubble(prior, { ...same, origin: "response" }, { ordinal: 102 }), false);
+  assert.equal(shouldMergeTranscriptUserBubbles(prior, same, { ordinal: 100 }, { ordinal: 101 }), true);
+  assert.equal(shouldMergeTranscriptUserBubbles(prior, same, { ordinal: 100 }, { ordinal: 170 }), false);
+  const withImage = { cls: "user", text: "看看这个", refs: ["image-1"], origin: "response" };
+  assert.equal(shouldMergeTranscriptUserBubbles(withImage, withImage, { ordinal: 100 }, { ordinal: 101 }), true);
+  assert.equal(shouldMergeTranscriptUserBubbles(withImage, withImage, { ordinal: 100 }, { ordinal: 170 }), false);
 });
 
 test("加载更早历史按新增高度补偿滚动位置", () => {
@@ -162,7 +189,7 @@ test("加载更早历史按新增高度补偿滚动位置", () => {
 
 test("PWA 会绕过缓存检查新版前端并在 Service Worker 接管后刷新", () => {
   const swSource = readFileSync(new URL("../web/sw.js", import.meta.url), "utf8");
-  assert.match(swSource, /const CACHE = "pocket-agent-shell-v9"/);
+  assert.match(swSource, /const CACHE = "pocket-agent-shell-v10"/);
   assert.match(swSource, /fetch\(request, \{ cache: "no-store" \}\)/);
   assert.match(webSource, /register\("sw\.js", \{ updateViaCache: "none" \}\)/);
   assert.match(webSource, /addEventListener\("controllerchange"/);
