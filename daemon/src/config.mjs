@@ -36,7 +36,7 @@ export function loadOrCreateConfig(path = defaultConfigPath()) {
     publicKey: keys.publicKeyRaw.toString("base64"),
     privateKeyPem: keys.privateKeyPem,
     relayUrl: "wss://relay.wokey.ai", // 官方 relay；可用 start --relay 覆盖为自建实例
-    webUrl: "https://focuxdot.github.io/CXX/", // 配对链接指向的手机端页面（GitHub Pages）；可用 start --web 覆盖
+    webUrl: "https://iambitions.github.io/CXX/", // 配对链接指向的手机端页面（GitHub Pages）；可用 start --web 覆盖
 
     codexCommand: "codex",
     claudeCommand: "claude", // Claude Code CLI；二进制存在时自动作为可切换 agent 提供
