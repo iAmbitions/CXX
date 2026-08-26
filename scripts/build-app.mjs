@@ -48,11 +48,10 @@ if (process.platform !== "darwin") {
   process.exit(1);
 }
 
-// 1. daemon binary must exist (build it first if missing)
-if (!existsSync(daemonBin)) {
-  console.log("→ daemon binary missing, building SEA ...");
-  run(process.execPath, [join(root, "scripts", "build-sea.mjs")]);
-}
+// 1. Always rebuild the daemon SEA from the current source. Reusing an existing
+// dist/sea/cxx-daemon can silently bundle stale daemon code into a new CXX.app.
+console.log("→ building fresh daemon SEA ...");
+run(process.execPath, [join(root, "scripts", "build-sea.mjs")]);
 
 // 1b. pty-host binary (Terminal Mode). Built per target arch; resolvePtyHostBin
 // finds it at ../Resources/bin/cxx-pty-host relative to the shell executable.
@@ -125,7 +124,6 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>MIT License</string>
 </dict>
