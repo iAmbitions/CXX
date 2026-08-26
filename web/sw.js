@@ -2,7 +2,7 @@
 // 仅缓存静态壳（HTML/manifest/图标），让"添加到主屏幕"离线也能打开界面。
 // 绝不缓存动态数据——会话内容走 WebSocket（不经 SW），故无需担心陈旧数据。
 // 更新策略：导航请求 network-first（始终尝试拿最新 index.html），离线回退缓存。
-const CACHE = "czr-shell-v7"; // v7：Terminal Mode（xterm vendor 资源入壳缓存）
+const CACHE = "pocket-agent-shell-v8"; // v8：历史对话净化 + 前端升级自动接管
 const SHELL = [
   "./",
   "./index.html",
@@ -41,7 +41,7 @@ self.addEventListener("fetch", (event) => {
   // 页面导航：network-first，保证拿到最新版本；离线时回退缓存壳
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request)
+      fetch(request, { cache: "no-store" })
         .then((res) => {
           caches.open(CACHE).then((c) => c.put("./index.html", res.clone())).catch(() => {});
           return res;
