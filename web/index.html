@@ -4128,6 +4128,8 @@ const app = {
   toolNodes: new Map(),    // call_id -> {stat, tout}，输出到达时并入调用行
   questionNodes: new Map(), // AskUserQuestion tool_use_id -> 交互卡；tool_result 到达后就地标已答
   proc: null,              // 进行中的过程组 {wrap, body, label, count, startTs}，task_complete 时收拢
+  lastTranscriptBubble: null, // 最近一条文本记录（event/response 双写去重，含历史中隐藏的 commentary）
+  transcriptOrdinal: 0,    // daemon 旧条目无 ordinal 时的本地顺序号，限制去重只作用于邻近记录
   seenImages: new Set(),   // 已渲染的 imageRef id（生成图多帧进度去重）
   drafts: new Map(),       // sessionId -> 未发送的输入草稿（会话间不串）
   filter: "",              // 会话列表搜索词
@@ -5956,6 +5958,7 @@ async function openSession(id, title, opts = {}) {
   app.stream = null;
   app.proc = null;
   app.lastTranscriptBubble = null;
+  app.transcriptOrdinal = 0;
   // 每次进会话把历史回填窗口复位（首屏与 daemon watch 的 SNAPSHOT_MAX_ITEMS 一致）
   app.histLimit = 500;
   app.histTotal = 0;
@@ -8327,10 +8330,37 @@ function isDuplicateTranscriptBubble(previous, bubble, sourceItem) {
   return closeInRollout;
 }
 
+function shouldMergeTranscriptUserBubbles(a, b, aSource, bSource) {
+  if (!a || !b || a.cls !== "user" || b.cls !== "user") return false;
+  const at = String(a.text || "").trim();
+  const bt = String(b.text || "").trim();
+  const ao = Number(aSource?.ordinal);
+  const bo = Number(bSource?.ordinal);
+  const closeInRollout = !Number.isFinite(ao) || !Number.isFinite(bo) || Math.abs(bo - ao) <= 64;
+  if (!closeInRollout) return false;
+  if (a.origin && b.origin && a.origin !== b.origin && at && at === bt) {
+    return true;
+  }
+  if (!((a.refs || []).length || (b.refs || []).length)) return false;
+  return !at || !bt || at === bt;
+}
+
 function earlierRestoreY(anchor, newScrollHeight) {
   if (!anchor) return 0;
   const addedAbove = Math.max(0, Number(newScrollHeight || 0) - Number(anchor.scrollHeight || 0));
   return Math.max(0, Number(anchor.scrollY || 0) + addedAbove);
+}
+
+function sourceOrdinalFor(item) {
+  const rawExplicit = item?.ordinal;
+  const explicit = Number(rawExplicit);
+  if (rawExplicit !== null && rawExplicit !== undefined && rawExplicit !== "" && Number.isFinite(explicit)) {
+    app.transcriptOrdinal = Math.max(app.transcriptOrdinal || 0, explicit + 1);
+    return explicit;
+  }
+  const ordinal = app.transcriptOrdinal || 0;
+  app.transcriptOrdinal = ordinal + 1;
+  return ordinal;
 }
 
 function renderInto(items, live = false) {
@@ -8374,14 +8404,6 @@ function renderInto(items, live = false) {
     const texts = [a.text, b.text].map((s) => String(s || "").trim()).filter(Boolean);
     const text = texts.length > 1 && texts[0] !== texts[1] ? texts.join("\n\n") : (texts[0] || "");
     return { cls: "user", text, refs, origin: b.origin || a.origin };
-  };
-  const shouldMergeUserBubbles = (a, b) => {
-    if (!a || !b || a.cls !== "user" || b.cls !== "user") return false;
-    const at = String(a.text || "").trim();
-    const bt = String(b.text || "").trim();
-    if (a.origin && b.origin && a.origin !== b.origin && at && at === bt) return true;
-    if (!((a.refs || []).length || (b.refs || []).length)) return false;
-    return !at || !bt || at === bt;
   };
   // 单条气泡 → 节点（codex 与 Claude 共用；Claude 一条消息含多块，逐块调用）。
   // Claude 全程内联（对标终端 scrollback）；ChatGPT 运行中也平铺显示，完成后统一折叠中间过程。
@@ -8459,7 +8481,7 @@ function renderInto(items, live = false) {
   const emitBubble = (bubble, sourceItem) => {
     if (!bubble) return;
     if (bubble.cls === "user") {
-      if (shouldMergeUserBubbles(pendingUserBubble, bubble)) {
+      if (shouldMergeTranscriptUserBubbles(pendingUserBubble, bubble, pendingUserSource, sourceItem)) {
         pendingUserBubble = mergeUserBubbles(pendingUserBubble, bubble);
         if (String(bubble.text || "").trim()) pendingUserSource = sourceItem;
       } else {
@@ -8472,7 +8494,12 @@ function renderInto(items, live = false) {
     flushPendingUser();
     emitBubbleNow(bubble, sourceItem);
   };
-  for (const item of items) {
+  for (const rawItem of items) {
+    // rollout 文件本身通常没有 ordinal。为当前完整快照/增量流补一个连续顺序号，
+    // 让 event/response 双写去重有真实的距离边界，不会把很久之后的同文消息误删。
+    const item = rawItem && typeof rawItem === "object"
+      ? { ...rawItem, ordinal: sourceOrdinalFor(rawItem) }
+      : rawItem;
     observePermissionItem(item);
     // Claude 条目：独立映射，一条消息展开成多块气泡；轮次状态走 onLive（turn/*），不看 item
     if (isClaudeItem(item)) {
@@ -8814,6 +8841,7 @@ function renderFullSnapshotItems(items, { snapshotEnd = false, loadedCount = nul
   app.stream = null; // 元素已随 log 清空
   app.proc = null;
   app.lastTranscriptBubble = null;
+  app.transcriptOrdinal = 0;
   app.snapshotRendering = true;
   try { renderInto(items); }
   finally { app.snapshotRendering = false; }
@@ -9088,6 +9116,7 @@ async function switchDaemon(id) {
   app.stream = null;
   app.proc = null;
   app.lastTranscriptBubble = null;
+  app.transcriptOrdinal = 0;
   app.filter = "";
   $("search").value = "";
   app.drafts.clear();
