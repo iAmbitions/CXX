@@ -7,7 +7,7 @@ import ServiceManagement
 // the daemon runs under launchd, so quitting the tray leaves remote running.
 // Window builders live in extensions (PairingWindow / DevicesWindow / NotifyWindow).
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private static let supportIssuesURL = URL(string: "https://github.com/focuxdot/CXX/issues")!
+    private static let supportIssuesURL = URL(string: "https://github.com/iAmbitions/CXX/issues")!
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
     // Open windows are retained here (menu-bar apps have no window controller stack).
@@ -22,6 +22,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         refreshIcon(status())
+        showFirstLaunchHintIfNeeded()
+        showDiskImageInstallHintIfNeeded()
+    }
+
+    // 从 DMG 挂载盘直接运行会让 LaunchAgent 写入 /Volumes/... 路径；一旦弹出 DMG
+    // 或重启，后台就找不到 daemon，手机端便会一直显示电脑离线。因此在配对前阻止它。
+    private var isRunningFromDiskImage: Bool {
+        Bundle.main.bundleURL.path.hasPrefix("/Volumes/")
+    }
+
+    private func showDiskImageInstallHintIfNeeded() {
+        guard isRunningFromDiskImage else { return }
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = L("请先安装到“应用程序”", "Install CXX in Applications first")
+            alert.informativeText = L(
+                "你正在从安装镜像（DMG）直接运行 C叉叉。请关闭本应用，把 DMG 里的 CXX.app 拖到“应用程序”文件夹，再从“应用程序”打开；否则弹出 DMG 或重启后，手机端会显示电脑离线。",
+                "CXX is running directly from the installer disk image. Quit it, drag CXX.app to Applications, then open it from Applications. Otherwise the phone will show the computer offline after the DMG is ejected or after a restart.",
+            )
+            alert.addButton(withTitle: L("打开“应用程序”", "Open Applications"))
+            alert.addButton(withTitle: L("知道了", "Got it"))
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+            }
+        }
+    }
+
+    private func canEnableRemote() -> Bool {
+        guard isRunningFromDiskImage else { return true }
+        showDiskImageInstallHintIfNeeded()
+        return false
+    }
+
+    // CXX 是菜单栏应用（不显示 Dock 图标或主窗口）。首次启动给出明确反馈，
+    // 避免用户从 Launchpad 点击后误以为应用卡死或没有打开。
+    private func showFirstLaunchHintIfNeeded() {
+        let key = "CXXDidShowMenuBarLaunchHint"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = L("C叉叉已启动", "CXX is running")
+            alert.informativeText = L(
+                "C叉叉运行在屏幕顶部右侧的菜单栏，不会打开普通窗口，也不会显示在 Dock。请点击顶部菜单栏里的绿色 CXX 图标，然后选择“开启远程 / 配对”。",
+                "CXX runs in the menu bar at the top-right of the screen. It does not open a normal window or appear in the Dock. Click the green CXX icon in the menu bar, then choose Enable Remote / Pair.",
+            )
+            alert.addButton(withTitle: L("知道了", "Got it"))
+            alert.runModal()
+        }
     }
 
     private func installMainMenu() {
@@ -182,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 扫码 = 开启。未启用时先隐式开启远程（装 LaunchAgent + launchctl 拉起 daemon），daemon
     // 在用户扫码的几秒间隙里完成 relay 预热；已启用则直接出码，不重启 daemon（避免打断在连的会话）。
     @objc func doPair() {
+        guard canEnableRemote() else { return }
         if !(status()["enabled"] as? Bool ?? false) {
             let en = backend(["enable"])
             if let err = en["error"] { alert(L("开启失败", "Enable failed"), "\(err)"); return } // daemon 起不来就别出码
@@ -255,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func presentUpdateResult(_ res: [String: Any]) {
         let pageURL = (res["url"] as? String).flatMap { URL(string: $0) }
-            ?? URL(string: "https://github.com/focuxdot/CXX/releases/latest")!
+            ?? URL(string: "https://github.com/iAmbitions/CXX/releases/latest")!
         let current = res["current"] as? String ?? "?"
         // 成功响应必带 latest；两者皆无 = daemon 没吐 JSON（版本过旧不认识
         // check-update、或启动即崩，backend() 都返回空字典）——不能当"已是最新"。
