@@ -3334,6 +3334,20 @@ function normalizeUserMessage(text) {
   return raw.slice(match.index + match[0].length).trim();
 }
 
+function isInternalUserMessage(text) {
+  const raw = String(text ?? "").trim();
+  return /^#{1,6}\s+AGENTS\.md instructions\b/i.test(raw)
+    || /^Another language model started to solve this problem\b/i.test(raw)
+    || /^<(?:environment_context|app-context|skills_instructions|permissions instructions)>[\s\S]*<\/(?:environment_context|app-context|skills_instructions|permissions instructions)>$/i.test(raw);
+}
+
+function responseMessageText(content) {
+  return (Array.isArray(content) ? content : [])
+    .map((c) => String(c?.text ?? c?.output_text ?? c?.input_text ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function parseCodexDirectives(text) {
   const directives = [];
   const lines = String(text ?? "").split(/\r?\n/);
@@ -3366,10 +3380,10 @@ function itemToBubble(item) {
       const raw = String(p.message ?? "").trim();
       if (pt === "agent_message") {
         const parsed = parseCodexDirectives(raw);
-        return parsed.text ? { cls: "assistant", text: parsed.text, directives: parsed.directives } : null;
+        return parsed.text ? { cls: "assistant", text: parsed.text, directives: parsed.directives, origin: "event" } : null;
       }
       const text = normalizeUserMessage(raw);
-      return text ? { cls: "user", text } : null;
+      return text && !isInternalUserMessage(text) ? { cls: "user", text, origin: "event" } : null;
     }
     if (pt === "patch_apply_end") {
       const files = Object.entries(p.changes ?? {}).map(([path, c]) => ({
@@ -3400,16 +3414,24 @@ function itemToBubble(item) {
       return p.imageRef ? { cls: "images", refs: [p.imageRef], user: false } : null;
     }
     if (pt === "message" && Array.isArray(p.content)) {
-      // 文本部分与 event_msg 重复（跳过），但用户贴的图只存在于这里
+      // 新版 Codex Desktop 只写 response_item/message，不再保证同时写 event_msg。
+      // 因此文本不能一概跳过；渲染层会对旧格式的 event/response 双份记录去重。
       const refs = p.content.map((c) => c?.imageRef).filter(Boolean);
-      if (refs.length) {
-        if (p.role === "user") {
-          const texts = p.content.map((c) => String(c?.text ?? c?.input_text ?? "").trim()).filter(Boolean);
-          return { cls: "user", text: normalizeUserMessage(texts.join("\n\n")), refs };
-        }
-        return { cls: "images", refs, user: false };
+      const rawText = responseMessageText(p.content);
+      if (p.role === "user") {
+        const text = normalizeUserMessage(rawText);
+        if (isInternalUserMessage(text)) return refs.length ? { cls: "user", text: "", refs, origin: "response" } : null;
+        return text || refs.length ? { cls: "user", text, refs, origin: "response" } : null;
       }
-      return null;
+      if (p.role === "assistant") {
+        const parsed = parseCodexDirectives(rawText);
+        if (parsed.text) {
+          return { cls: "assistant", text: parsed.text, directives: parsed.directives,
+                   phase: p.phase ?? "final_answer", origin: "response" };
+        }
+        return refs.length ? { cls: "images", refs, user: false } : null;
+      }
+      return refs.length ? { cls: "images", refs, user: false } : null;
     }
     if (pt === "function_call") {
       app.sawFunctionCalls = true;
@@ -5933,6 +5955,7 @@ async function openSession(id, title, opts = {}) {
   app.modelState = null;
   app.stream = null;
   app.proc = null;
+  app.lastTranscriptBubble = null;
   // 每次进会话把历史回填窗口复位（首屏与 daemon watch 的 SNAPSHOT_MAX_ITEMS 一致）
   app.histLimit = 500;
   app.histTotal = 0;
@@ -8284,8 +8307,30 @@ function inputPh() {
 
 function shouldRenderTranscriptBubble(bubble, live = false) {
   if (!bubble) return false;
-  // 已有对话只保留真正的对话和结果；内部命令/工具输出仅在当前实时执行时展示。
-  return live || (bubble.cls !== "tool" && bubble.cls !== "toolout");
+  if (live) return true;
+  // 历史页是“对话记录”，不是执行日志：只保留用户输入、最终回答和图片结果。
+  if (bubble.cls === "assistant") return bubble.phase !== "commentary";
+  return bubble.cls === "user" || bubble.cls === "images";
+}
+
+function isDuplicateTranscriptBubble(previous, bubble, sourceItem) {
+  if (!previous || !bubble || !["user", "assistant"].includes(bubble.cls)) return false;
+  if (previous.cls !== bubble.cls || previous.origin === bubble.origin) return false;
+  if (String(previous.text || "").trim() !== String(bubble.text || "").trim()) return false;
+  const currentOrdinal = Number(sourceItem?.ordinal);
+  // event_msg 与 response_item 之间可能隔着 task/turn_context、工具回执甚至上下文压缩。
+  // 真实 rollout 中观察到同一文本最多相隔数十条；放宽到 64，同时仍要求它是上一条
+  // 对话文本、角色一致且来源相反，避免吞掉同来源的连续相同追问。
+  const closeInRollout = Number.isFinite(currentOrdinal) && Number.isFinite(previous.ordinal)
+    ? Math.abs(currentOrdinal - previous.ordinal) <= 64
+    : true;
+  return closeInRollout;
+}
+
+function earlierRestoreY(anchor, newScrollHeight) {
+  if (!anchor) return 0;
+  const addedAbove = Math.max(0, Number(newScrollHeight || 0) - Number(anchor.scrollHeight || 0));
+  return Math.max(0, Number(anchor.scrollY || 0) + addedAbove);
 }
 
 function renderInto(items, live = false) {
@@ -8328,19 +8373,30 @@ function renderInto(items, live = false) {
     const refs = [...(a.refs || []), ...(b.refs || [])];
     const texts = [a.text, b.text].map((s) => String(s || "").trim()).filter(Boolean);
     const text = texts.length > 1 && texts[0] !== texts[1] ? texts.join("\n\n") : (texts[0] || "");
-    return { cls: "user", text, refs };
+    return { cls: "user", text, refs, origin: b.origin || a.origin };
   };
   const shouldMergeUserBubbles = (a, b) => {
     if (!a || !b || a.cls !== "user" || b.cls !== "user") return false;
-    if (!((a.refs || []).length || (b.refs || []).length)) return false;
     const at = String(a.text || "").trim();
     const bt = String(b.text || "").trim();
+    if (a.origin && b.origin && a.origin !== b.origin && at && at === bt) return true;
+    if (!((a.refs || []).length || (b.refs || []).length)) return false;
     return !at || !bt || at === bt;
   };
   // 单条气泡 → 节点（codex 与 Claude 共用；Claude 一条消息含多块，逐块调用）。
   // Claude 全程内联（对标终端 scrollback）；ChatGPT 运行中也平铺显示，完成后统一折叠中间过程。
   const inline = app.agent === "claude";
   const emitBubbleNow = (bubble, sourceItem) => {
+    if (isDuplicateTranscriptBubble(app.lastTranscriptBubble, bubble, sourceItem)) return;
+    // 即使历史模式会隐藏 commentary，也要先记住它的文本来源。旧版 rollout 常在若干
+    // 工具事件后再写一份相同的 event_msg:agent_message；若只记已渲染气泡，那份过程消息
+    // 会被误当最终回答展示出来。
+    if (["user", "assistant"].includes(bubble.cls)) {
+      app.lastTranscriptBubble = {
+        cls: bubble.cls, text: bubble.text, origin: bubble.origin,
+        ordinal: Number.isFinite(Number(sourceItem?.ordinal)) ? Number(sourceItem.ordinal) : null,
+      };
+    }
     if (!shouldRenderTranscriptBubble(bubble, live)) return;
     let node = null;
     let toProc = false;
@@ -8563,23 +8619,26 @@ function resetPullTip() {
 function restoreEarlierScroll() {
   const a = app.earlierAnchor;
   if (!a) return;
-  // session.more 回来的是“更大的尾部快照”，前端会清空并重建整段 DOM；
-  // 这里必须恢复触发前的绝对滚动位置，不能按高度差补偿，否则会被推向最新消息。
-  const y = Math.max(0, a.scrollY);
-  window.scrollTo(0, y);
-  requestAnimationFrame(() => {
-    if (app.earlierAnchor === a) window.scrollTo(0, y);
-  });
-  setTimeout(() => {
-    if (app.earlierAnchor === a) window.scrollTo(0, y);
-  }, 80);
+  // session.more 用更大的尾部快照重建整段 DOM。新增内容位于当前视口上方，
+  // 必须按页面高度增量补偿，才能继续停在原先读到的消息，而不是跳回顶部。
+  const restore = () => {
+    if (app.earlierAnchor !== a) return;
+    window.scrollTo(0, earlierRestoreY(a, document.documentElement.scrollHeight));
+  };
+  restore();
+  requestAnimationFrame(restore);
+  setTimeout(restore, 80);
+  setTimeout(restore, 260); // 图片/Markdown 延迟撑高后的二次校准
 }
 function clearEarlierLoading() {
   clearTimeout(app.earlierTimer);
   clearTimeout(app.earlierFailsafe);
+  const anchor = app.earlierAnchor;
   restoreEarlierScroll();
   app.loadingEarlier = false;
-  app.earlierAnchor = null;
+  // 延迟清锚点，让字体、图片和折叠区在结算后的布局变化仍能二次校准；
+  // 若用户马上再次加载，新的 anchor 会覆盖它，旧回调不会干扰。
+  setTimeout(() => { if (app.earlierAnchor === anchor) app.earlierAnchor = null; }, 320);
   resetPullTip();
   updateStatusStrip();
   updateJump();
@@ -8601,19 +8660,21 @@ function loadEarlier() {
   tip.style.height = "0px";
   tip.setAttribute("aria-disabled", "true");
   tip.tabIndex = -1;
+  const requestedLimit = Math.min(5000, app.histLimit + 500);
   app.earlierAnchor = {
     scrollY: window.scrollY,
+    scrollHeight: document.documentElement.scrollHeight,
+    requestedLimit,
   };
   tip.classList.remove("drag");
   app.loadingEarlier = true;
   updateStatusStrip();
-  app.histLimit = Math.min(5000, app.histLimit + 500);
   showToast(t("toast.loadearlier"), 4000);
   clearTimeout(app.earlierFailsafe);
   app.earlierFailsafe = setTimeout(() => {
     if (app.loadingEarlier) clearEarlierLoading();
   }, 8000);
-  app.session.request("session.more", { limit: app.histLimit }).catch((e) => {
+  app.session.request("session.more", { limit: requestedLimit }).catch((e) => {
     clearEarlierLoading();
     showBanner(t("banner.loadearlier_fail", e.message));
   });
@@ -8752,6 +8813,7 @@ function renderFullSnapshotItems(items, { snapshotEnd = false, loadedCount = nul
   app.seenImages.clear(); // 快照重放会重发同批 imageRef
   app.stream = null; // 元素已随 log 清空
   app.proc = null;
+  app.lastTranscriptBubble = null;
   app.snapshotRendering = true;
   try { renderInto(items); }
   finally { app.snapshotRendering = false; }
@@ -9025,6 +9087,7 @@ async function switchDaemon(id) {
   app.seenImages.clear();
   app.stream = null;
   app.proc = null;
+  app.lastTranscriptBubble = null;
   app.filter = "";
   $("search").value = "";
   app.drafts.clear();
