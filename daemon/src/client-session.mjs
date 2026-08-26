@@ -1,6 +1,6 @@
 // 单个远端设备连接的 E2E 会话：握手 -> 鉴权 -> 方法路由（见 PROTOCOL.md §2/§3）
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 
 import {
   APP_PROTOCOL,
@@ -14,9 +14,59 @@ import {
   saveConfig,
 } from "./config.mjs";
 import { deriveSessionKey, open as sealedOpen, seal } from "./crypto.mjs";
+import { readCodexConfiguredModel, readCodexLocalModelCatalog, resolveCodexModels } from "./codex-models.mjs";
 import { normalizeTerminalPresets } from "./terminal-manager.mjs";
 import { listClaudeCommands, searchFiles } from "./file-search.mjs";
 import { readRolloutWindow, RolloutTail } from "./rollout-tail.mjs";
+
+// 桌面 Codex 的 rollout 是追加式 JSONL。仅 stat mtime 并不代表任务仍在运行：
+// 任务结束后，Codex 仍可能写入 item_completed、索引或恢复记录。为避免手机端出现
+// 「假进行中」，只读取尾部有限字节，倒序寻找最近的 task_started / task_complete / turn_aborted
+// 边界；最后一条边界是 task_started 才认为桌面端仍在工作。
+const DESKTOP_ACTIVE_TTL_MS = 60_000;
+const ROLLOUT_ACTIVITY_TAIL_BYTES = 256 * 1024;
+
+export function isDesktopRolloutActive(path, now = Date.now()) {
+  let info;
+  try {
+    info = statSync(path);
+    if (now - info.mtimeMs >= DESKTOP_ACTIVE_TTL_MS || info.size <= 0) return false;
+  } catch {
+    return false;
+  }
+
+  const bytes = Math.min(info.size, ROLLOUT_ACTIVITY_TAIL_BYTES);
+  const buf = Buffer.allocUnsafe(bytes);
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    readSync(fd, buf, 0, bytes, Math.max(0, info.size - bytes));
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* 文件在读取期间被替换，按不活跃处理 */ }
+    }
+  }
+
+  // 从尾部倒序检查完整行；第一行可能被截断，JSON.parse 失败时自然跳过。
+  const lines = buf.toString("utf8").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const item = JSON.parse(line);
+      if (item?.type !== "event_msg") continue;
+      const type = item.payload?.type;
+      if (type === "task_started") return true;
+      if (type === "task_complete" || type === "turn_aborted") return false;
+    } catch {
+      // 忽略不完整/损坏行；rollout 可能正好在追加。
+    }
+  }
+  // 不存在可信轮次边界时宁可不点亮，避免历史/恢复日志制造假的「进行中」。
+  return false;
+}
 
 // 手机端鉴权时上报的设备短标签（如「iPhone · 微信」）净化后作 device.name 显示用：
 // 去控制字符/换行、掐头空白、限长，避免污染配置或菜单显示。非字符串一律成空串。
@@ -162,6 +212,17 @@ export function sanitizeTurnOptions(raw) {
   return Object.keys(out).length ? out : undefined;
 }
 
+// Codex 将用户附图同时写成 input_image 与一对供宿主识别的 input_text 标签：
+// <image ...> / </image>。手机端只应显示真正的图片，不能把本机临时路径当成聊天正文。
+function stripCodexImageMarkup(text) {
+  if (typeof text !== "string") return text;
+  return text
+    .replace(/<image_resize_notice>[\s\S]*?<\/image_resize_notice>/gi, "")
+    .replace(/<image\b[^>]*>/gi, "")
+    .replace(/<\/image>/gi, "")
+    .trim();
+}
+
 const TRANSCRIPT_TEXT_BUDGET = 12_000;
 
 function clippedTranscriptText(value, limit = TRANSCRIPT_TEXT_BUDGET) {
@@ -207,6 +268,10 @@ export function fitRolloutItemForTransport(item, maxChars = 48_000) {
   };
 }
 
+function prepareRolloutItemForTransport(item, sessionId) {
+  return fitRolloutItemForTransport(extractImages(item, sessionId), 48_000);
+}
+
 export function extractImages(item, sessionId) {
   // Claude entries carry the Anthropic Messages shape (message.content blocks, no
   // payload). Pasted images arrive as { type:"image", source:{ type:"base64",
@@ -235,6 +300,15 @@ export function extractImages(item, sessionId) {
   if (p.type === "message" && Array.isArray(p.content)) {
     let changed = false;
     const content = p.content.map((c) => {
+      // input_text 里的 <image ...> / </image> 只是 Codex 给宿主的协议标记，
+      // 移动端显示它会泄露无意义的本机临时路径。
+      if (c?.type === "input_text" && typeof c.text === "string") {
+        const text = stripCodexImageMarkup(c.text);
+        if (text !== c.text) {
+          changed = true;
+          return { ...c, text };
+        }
+      }
       if (typeof c?.image_url !== "string" || !c.image_url.startsWith("data:image/")) return c;
       const comma = c.image_url.indexOf(",");
       const b64 = c.image_url.slice(comma + 1);
@@ -243,6 +317,10 @@ export function extractImages(item, sessionId) {
       changed = true;
       const ref = cacheImage(b64, mime, sessionId);
       return { ...c, image_url: null, imageRef: ref ?? { tooLarge: true } };
+    }).filter((c) => {
+      // 仅由图片协议标记组成的文本块不再转发；图片本体已由 imageRef 承载。
+      if (c?.type !== "input_text") return true;
+      return typeof c.text !== "string" || c.text.trim().length > 0;
     });
     if (changed) return { ...item, payload: { ...p, content } };
   }
@@ -519,7 +597,9 @@ export class ClientSession {
         const agent = this.#agentOf(message.params);
         const backend = this.#backend(agent);
         const hub = this.#hub(agent);
-        const { projects, idToCwd, hasMore } = await backend.aggregateProjects();
+        const { projects, idToCwd, hasMore } = await backend.aggregateProjects({
+          fresh: message.params?.fresh === true,
+        });
         // 运行/审批徽标实时从 hub 叠加（小集合，不进缓存、不 stat 文件）
         const runByCwd = new Map();
         const apprByCwd = new Map();
@@ -618,7 +698,9 @@ export class ClientSession {
           this.#moreBusy = true;
           let items, total;
           try {
-            ({ items, total } = await readRolloutWindow(this.#replayPath, from, limit));
+            ({ items, total } = await readRolloutWindow(this.#replayPath, from, limit, {
+              mapItem: (item) => prepareRolloutItemForTransport(item, sid),
+            }));
           } finally {
             this.#moreBusy = false;
           }
@@ -712,19 +794,38 @@ export class ClientSession {
       case "models.list": {
         // 代理后端的 model/list：手机端模型选择器数据源（瘦身：只留展示与选择所需）
         try {
-          const r = await this.#backend(this.#agentOf(message.params)).request("model/list", {});
-          const models = (r?.data ?? [])
-            .filter((m) => !m.hidden)
-            .map((m) => ({
-              id: m.id ?? m.model,
-              name: m.displayName ?? m.model ?? m.id,
-              description: m.description ?? "",
-              efforts: (m.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort),
-              defaultEffort: m.defaultReasoningEffort ?? null,
-              isDefault: m.isDefault === true,
-            }));
+          const agent = this.#agentOf(message.params);
+          const backend = this.#backend(agent);
+          // 每次请求都重新读本机 config.toml / model_catalog_json。对于配置了
+          // 本地 catalog 的 Codex，直接以它为模型列表来源，避免 app-server 自身
+          // 的模型缓存/刷新超时让手机页面看不到刚切换的新配置。
+          const configuredModel = agent === "codex"
+            ? (backend.configuredModelId?.() ?? readCodexConfiguredModel())
+            : null;
+          const localCatalog = agent === "codex" ? readCodexLocalModelCatalog() : null;
+          let rawModels;
+          if (localCatalog?.length) {
+            rawModels = resolveCodexModels([], { configuredModel, localCatalog });
+          } else {
+            const r = await backend.request("model/list", {});
+            rawModels = (r?.data ?? []).filter((m) => !m.hidden);
+            if (agent === "codex") rawModels = resolveCodexModels(rawModels, { configuredModel });
+          }
+          const models = rawModels.map((m) => ({
+            id: m.id ?? m.model,
+            name: m.displayName ?? m.model ?? m.id,
+            description: m.description ?? "",
+            efforts: (m.supportedReasoningEfforts ?? []).map((e) => e.reasoningEffort),
+            defaultEffort: m.defaultReasoningEffort ?? null,
+            isDefault: m.isDefault === true,
+          }));
+          const source = agent === "codex" && localCatalog?.length ? "local-catalog" : "backend";
+          this.#daemon.log(
+            `模型列表刷新: agent=${agent} source=${source} configured=${configuredModel ?? "-"} count=${models.length}`,
+          );
           this.#reply(message.id, { models });
         } catch (err) {
+          this.#daemon.log(`模型列表刷新失败: agent=${this.#agentOf(message.params)} error=${err.message}`);
           this.#reply(message.id, null, { code: 500, message: `获取模型列表失败: ${err.message}` });
         }
         return;
@@ -1265,7 +1366,9 @@ export class ClientSession {
     this.#seqCap = params.caps?.seq === 1;
     this.#imgPushCap = params.caps?.img === 1;
     if (params.pairToken) {
-      const paired = consumePairToken(this.#daemon.configPath, params.pairToken);
+      const paired = consumePairToken(this.#daemon.configPath, params.pairToken, {
+        reuseDeviceToken: typeof params.previousDeviceToken === "string" ? params.previousDeviceToken : "",
+      });
       if (!paired) {
         this.#reply(message.id, null, { code: 403, message: "配对码无效或已过期" });
         this.#close();
@@ -1296,7 +1399,7 @@ export class ClientSession {
       });
       this.#registerAllHubs();
       for (const id of pairMerged) this.#daemon.kickDevice?.(id); // 旧凭据若还连着，一并踢下线
-      this.#daemon.log(`新设备配对成功: ${paired.device.deviceId}`);
+      this.#daemon.log(`${paired.reused ? "已有设备重新配对" : "新设备配对成功"}: ${paired.device.deviceId}`);
       return;
     }
     if (params.deviceToken) {
@@ -1444,7 +1547,9 @@ export class ClientSession {
       this.#hub(agent).isRunning(sessionId) || this.#isFileActive(thread.path, Date.now());
     if (message.params?.fromStart && !running) {
       this.#replayPath = thread.path;
-      const { items, total } = await readRolloutWindow(thread.path, 0, 500);
+      const { items, total } = await readRolloutWindow(thread.path, 0, 500, {
+        mapItem: (item) => prepareRolloutItemForTransport(item, sessionId),
+      });
       if (this.#watchSuperseded(gen, message.id)) return; // 读文件期间已被新 watch 接管
       this.#armWatchLease(message.params?.leaseMs);
       this.#reply(message.id, { ok: true, mode: "replay", total });
@@ -1462,6 +1567,7 @@ export class ClientSession {
       : null;
     this.#tail = new RolloutTail(thread.path, {
       resume,
+      mapItem: (item) => prepareRolloutItemForTransport(item, sessionId),
       onItems: (items, meta) => this.#sendItems(sessionId, items, meta),
       onError: (err) => this.#daemon.log(`tail ${sessionId} 失败: ${err.message}`),
     });
@@ -1503,11 +1609,10 @@ export class ClientSession {
   }
 
   #isFileActive(path, now) {
-    try {
-      return now - statSync(path).mtimeMs < 60_000;
-    } catch {
-      return false;
-    }
+    // 不要只看 mtime：Codex 会在任务结束后继续补写元数据、索引或重放记录，
+    // 仅凭「最近 60 秒有写入」会把早已结束的桌面会话永久误报成「桌面活动」。
+    // 只在日志尾部明确显示最后一个轮次边界仍是 task_started 时才认定桌面任务活跃。
+    return isDesktopRolloutActive(path, now);
   }
 
   // —— 附图上传缓冲 ——
@@ -1590,7 +1695,6 @@ export class ClientSession {
     // 回放帧带条目偏移入队：outbox 溢出丢弃时才知道该从哪补读（游标随分片推进）
     let replayCursor = typeof meta.replayFrom === "number" ? meta.replayFrom : null;
     const MAX_CHUNK_CHARS = 64_000;
-    const MAX_ITEM_CHARS = 48_000;
     let chunk = [];
     let size = 0;
     let first = snapshot;
@@ -1626,9 +1730,8 @@ export class ClientSession {
       size = 0;
     };
     for (const item of items) {
-      let entry = extractImages(item, sessionId); // 大图抽出缓存（记来源会话），条目瘦身后再做截断判断
+      const entry = prepareRolloutItemForTransport(item, sessionId);
       if (imgIds) collectImageRefs(entry, imgIds);
-      entry = fitRolloutItemForTransport(entry, MAX_ITEM_CHARS);
       let serialized = JSON.stringify(entry);
       if (size + serialized.length > MAX_CHUNK_CHARS && chunk.length > 0) flush();
       chunk.push(entry);
@@ -1801,7 +1904,9 @@ export class ClientSession {
           });
           continue;
         }
-        const { items } = await readRolloutWindow(this.#replayPath, at, 500);
+        const { items } = await readRolloutWindow(this.#replayPath, at, 500, {
+          mapItem: (item) => prepareRolloutItemForTransport(item, this.#watchedThreadId),
+        });
         if (gen !== this.#watchGen) break; // 读文件期间会话已切换，条目属旧会话，不能发
         if (items.length === 0) break;
         this.#sendItems(this.#watchedThreadId, items, { snapshot: false, replayFrom: at });
