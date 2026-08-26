@@ -56,7 +56,7 @@ test("checkUpdate 网络失败返回 error + 发布页兜底", async () => {
     fetchImpl: () => Promise.reject(new Error("offline")),
   });
   assert.equal(res.error, "offline");
-  assert.match(res.url, /github\.com\/focuxdot\/CXX\/releases/);
+  assert.match(res.url, /github\.com\/iAmbitions\/CXX\/releases/);
 });
 
 test("checkUpdate 正常响应走 shapeUpdateResult", async () => {
