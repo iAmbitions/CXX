@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.messageText = L("请先安装到“应用程序”", "Install Pocket Agent in Applications first")
             alert.informativeText = L(
                 "你正在从安装镜像（DMG）直接运行口袋Agent。请关闭本应用，把 DMG 里的口袋Agent.app 拖到“应用程序”文件夹，再从“应用程序”打开；否则弹出 DMG 或重启后，手机端会显示电脑离线。",
-                "Pocket Agent is running directly from the installer disk image. Quit it, drag Pocket Agent.app to Applications, then open it from Applications. Otherwise the phone will show the computer offline after the DMG is ejected or after a restart.",
+                "Pocket Agent is running directly from the installer disk image. Quit it, drag Pocket Agent.app to Applications, then open it from Applications. Otherwise the phone will show the computer offline after the DMG is ejected or after a restart."
             )
             alert.addButton(withTitle: L("打开“应用程序”", "Open Applications"))
             alert.addButton(withTitle: L("知道了", "Got it"))
