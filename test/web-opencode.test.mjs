@@ -11,3 +11,9 @@ test("phone UI exposes OpenCode as a first-class agent and reuses structured tra
   assert.match(source, /o\.permissionPreset = p/);
   assert.match(source, /等待 \$\{agentName\(app\.agent\)\} 继续/);
 });
+
+
+test("phone UI invalidates the model cache after daemon reconnect", () => {
+  const onReady = source.slice(source.indexOf("session.onReady = async"), source.indexOf("session.connect().catch"));
+  assert.match(onReady, /app\.models = null;[\s\S]*modelsLoading = false;[\s\S]*prefetchModels\(\)/);
+});
