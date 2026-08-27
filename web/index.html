@@ -151,6 +151,7 @@ try {
   #agentpick .agentico svg { width: 18px; height: 18px; display: block; fill: currentColor; }
   #agentpick .agentico.codex { color: #7a9dff; }
   #agentpick .agentico.claude { color: hsl(14.8 63.1% 59.6%); }
+  #agentpick .agentico.opencode { color: hsl(145 60% 45%); }
   #agentpick .agentname { flex: 1; min-width: 0; }
   #agentpick .agentwarn { color: var(--warn); font-size: 12px; }
   #agentpick .agentck { color: var(--accent); font-weight: 700; }
@@ -2414,6 +2415,8 @@ const WATCH_RENEW_RETRY_MS = 5000;
 const BACKGROUND_UNWATCH_GRACE_MS = 15000;
 const HB_VERIFY_MS = 5000;
 const REQUEST_TIMEOUT_MS = 30000;
+// Codex 首次列会话可能需要恢复本地索引；只放宽列表族请求，不掩盖其他 RPC 卡死。
+const LIST_REQUEST_TIMEOUT_MS = 90000;
 
 // 从 UA 解读一个便于识别的设备短标签（如「华为 · 微信 8.0.40」），鉴权时发给电脑端，
 // 让「已配对设备」页显示可读名字而非随机 ID。纯启发式、失败即返回空串（不阻断鉴权）。
@@ -2460,7 +2463,7 @@ function deviceLabel() {
 
 // 前端已具备渲染路径的 agent（绞杀式迁移开关）：Claude 独立渲染已就位 → 解锁切换器。
 // 只暴露此集合内的后端；daemon 未注册 claude 时 agents.list 自然不含，切换器仍隐藏。
-const AGENT_UI_READY = new Set(["codex", "claude"]);
+const AGENT_UI_READY = new Set(["codex", "claude", "opencode"]);
 
 // 需按当前 agent 路由到对应后端/hub 的方法（其余走全局：auth/agents.list/share.revoke 等）
 const AGENT_ROUTED = new Set([
@@ -2849,6 +2852,9 @@ class Session {
   }
 
   async request(method, params = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+    if ((method === "sessions.list" || method === "projects.list") && timeoutMs === REQUEST_TIMEOUT_MS) {
+      timeoutMs = LIST_REQUEST_TIMEOUT_MS;
+    }
     if (method === "session.watch" && this.serverCaps?.wl === 1) {
       params = { ...params, leaseMs: WATCH_LEASE_MS };
     }
@@ -3746,14 +3752,14 @@ function questionNode({ callId, questions }) {
     send.disabled = !states.length || states.some((state) => !state.selected.size && !state.other?.value.trim());
   }
   send.onclick = async () => {
-    if (send.disabled || !callId || app.agent !== "claude" || !app.currentId) return;
+    if (send.disabled || !callId || !(app.agent === "claude" || app.agent === "opencode") || !app.currentId) return;
     send.disabled = true;
     wrap.classList.add("answering");
     result.textContent = "正在提交…";
     try {
       await app.session.request("question.respond", { sessionId: app.currentId, toolUseId: callId, answers: answers() }, 30000);
       // 等 session tail 的 tool_result 做最终确认，避免写入失败或别的设备抢答时本地误显示已完成。
-      result.textContent = "已提交，等待 Claude 继续…";
+      result.textContent = `已提交，等待 ${agentName(app.agent)} 继续…`;
     } catch (err) {
       wrap.classList.remove("answering");
       result.textContent = "";
@@ -5439,14 +5445,16 @@ function hydrateAgentSnapshot(daemonId) {
 }
 
 function agentLabel(id) {
-  return id === "claude" ? "Claude" : id === "codex" ? "ChatGPT" : id;
+  return id === "claude" ? "Claude" : id === "opencode" ? "OpenCode" : id === "codex" ? "ChatGPT" : id;
 }
 
 function agentIconNode(id) {
   const ico = document.createElement("span");
-  ico.className = `agentico ${id === "claude" ? "claude" : id === "codex" ? "codex" : ""}`;
+  ico.className = `agentico ${id === "claude" ? "claude" : id === "opencode" ? "opencode" : id === "codex" ? "codex" : ""}`;
   if (id === "claude") {
     ico.innerHTML = `<svg viewBox="0 0 100 100" aria-hidden="true"><path d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9-4.7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2-2 .2-3 1-1 8-5.5Z"/></svg>`;
+  } else if (id === "opencode") {
+    ico.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h6v4H8v6h2v4H4V5Zm10 0h6v14h-6v-4h2V9h-2V5Z"/></svg>`;
   } else {
     ico.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z"/></svg>`;
   }
@@ -5867,6 +5875,16 @@ function newWatchToken() {
   return app.watchToken;
 }
 
+// watch 应答携带 daemon 的权威运行态，用来补齐订阅窗口里的完成事件竞态：
+// 尤其新会话首轮很快结束时，turn/completed 可能早于真实 threadId 返回，页面当时
+// 仍停留在 draft id 而忽略该事件。正文随后能从 tail 补回，但若不在此对账就会一直
+// 显示“回复中”。旧 daemon 没有 running 字段，保持原行为以兼容。
+function applyWatchRunningState(result) {
+  if (typeof result?.running !== "boolean" || app.view !== "session") return;
+  if (result.running) setRunning(true, "daemon");
+  else if (app.driver === "daemon") setRunning(false);
+}
+
 let backgroundWatchTimer = null;
 let backgroundWatchSuspended = false;
 
@@ -5890,6 +5908,7 @@ async function watchCurrentSession(session = app.session, { resetReplay = false 
     if (cur?.ident && cur.total > 0) params.have = { total: cur.total, ident: cur.ident };
   }
   const result = await session.request("session.watch", params);
+  applyWatchRunningState(result);
   if (app.isViewer) {
     app.replayMode = result?.mode === "replay";
     if (typeof result?.total === "number") app.histTotal = result.total;
@@ -6024,6 +6043,7 @@ async function openSession(id, title, opts = {}) {
     params.wt = newWatchToken();
     if (cached?.ident && cached.total > 0) params.have = { total: cached.total, ident: cached.ident };
     const r = await app.session.request("session.watch", params);
+    applyWatchRunningState(r);
     if (r?.mode === "replay") {
       app.replayMode = true;
       if (typeof r.total === "number") app.histTotal = r.total;
@@ -6267,7 +6287,10 @@ async function promoteDraftToSession(threadId, cwd) {
   localStorage.setItem("czr-last", JSON.stringify({ id: threadId, title: app.currentTitle || t("session.new") }));
   $("sharebtn").style.display = "";
   updateStatusPill();
-  try { await app.session.request("session.watch", { sessionId: threadId, wt: newWatchToken() }); }
+  try {
+    const result = await app.session.request("session.watch", { sessionId: threadId, wt: newWatchToken() });
+    applyWatchRunningState(result);
+  }
   catch (e) { if (e.code !== 409) showBanner(t("banner.attach_fail", e.message)); }
 }
 
@@ -6500,7 +6523,10 @@ async function dispatch(text, atts, { fromQueue = false } = {}) {
     if (app.pendingWatch) {
       // 空会话首条消息已发出 → rollout 文件已生成，现在接入流式与历史
       app.pendingWatch = false;
-      try { await app.session.request("session.watch", { sessionId: originId, wt: newWatchToken() }); }
+      try {
+        const result = await app.session.request("session.watch", { sessionId: originId, wt: newWatchToken() });
+        applyWatchRunningState(result);
+      }
       catch (e) { if (e.code !== 409) showBanner(t("banner.attach_fail", e.message)); } // 409=已被新 watch 接管
     }
     return true;
@@ -6951,7 +6977,7 @@ const CLAUDE_DEFAULT_EFFORT = "high";
 // 某模型的“默认力度”：后端给了用后端的；Claude 缺省时兜底常量（取其支持档里的该值，否则最后一档）
 function modelDefaultEffort(meta) {
   if (meta?.defaultEffort) return meta.defaultEffort;
-  if (app.agent === "claude" && meta?.efforts?.length) {
+  if ((app.agent === "claude" || app.agent === "opencode") && meta?.efforts?.length) {
     return meta.efforts.includes(CLAUDE_DEFAULT_EFFORT) ? CLAUDE_DEFAULT_EFFORT : meta.efforts[meta.efforts.length - 1];
   }
   return null;
@@ -7045,6 +7071,7 @@ function turnOptions() {
   if (p === "readonly") { o.approvalPolicy = "on-request"; o.sandboxPolicy = { type: "readOnly" }; }
   else if (p === "auto") { o.approvalPolicy = "on-request"; o.sandboxPolicy = { type: "workspaceWrite" }; }
   else if (p === "full") { o.approvalPolicy = "never"; o.sandboxPolicy = { type: "dangerFullAccess" }; }
+  if (app.agent === "opencode") o.permissionPreset = p;
   if (app.turnOpts.model) {
     o.model = app.turnOpts.model;
     if (app.turnOpts.effort) o.effort = app.turnOpts.effort;
@@ -7151,10 +7178,10 @@ function observePermissionItem(item) {
     setModelState(codexModelState(item.payload));
   } else if (item?.type === "permission-mode") {
     setPermissionState(claudePermissionState(item.permissionMode));
-  } else if (app.agent === "claude" && item?.permissionMode) {
+  } else if ((app.agent === "claude" || app.agent === "opencode") && item?.permissionMode) {
     setPermissionState(claudePermissionState(item.permissionMode));
   }
-  if (app.agent === "claude" && isClaudeItem(item)) setModelState(claudeModelState(item));
+  if ((app.agent === "claude" || app.agent === "opencode") && isClaudeItem(item)) setModelState(claudeModelState(item));
 }
 
 function effectivePermissionState() {
@@ -8007,7 +8034,7 @@ function fmtTok(n) { return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
 // 本轮耗时：Claude 优先用锚定的真实起点(用户消息时间戳)，否则回落 runStart；钳非负防时钟偏差
 function turnElapsed() {
-  const base = app.agent === "claude" && app.turnStartTs ? app.turnStartTs : app.runStart;
+  const base = (app.agent === "claude" || app.agent === "opencode") && app.turnStartTs ? app.turnStartTs : app.runStart;
   return Math.max(0, Date.now() - base);
 }
 
@@ -8114,7 +8141,7 @@ function updateActLine() {
   }
   log.appendChild(el); // 始终居于信息流最末
   el.querySelector(".amid").textContent = `${app.actVerb || t("act.work")}…`;
-  const tok = app.agent === "claude" && app.turnTok > 0 ? ` · ↑${fmtTok(app.turnTok)} tokens` : ""; // 对标 Claude Code：↑ + tokens 单位
+  const tok = (app.agent === "claude" || app.agent === "opencode") && app.turnTok > 0 ? ` · ↑${fmtTok(app.turnTok)} tokens` : ""; // 对标 Claude Code：↑ + tokens 单位
   el.querySelector(".acnt").textContent = ` ${fmtDur(turnElapsed())}${tok}`;
 }
 
@@ -8305,7 +8332,7 @@ function claudeTailPulse() {
 
   // 输入框占位随当前 agent 变（i18n 串里写死了 "ChatGPT"，按名替换）
 function inputPh() {
-  return t("input.ph").replace("ChatGPT", app.agent === "claude" ? "Claude" : "ChatGPT");
+  return t("input.ph").replace("ChatGPT", app.agent === "claude" ? "Claude" : app.agent === "opencode" ? "OpenCode" : "ChatGPT");
 }
 
 function shouldRenderTranscriptBubble(bubble, live = false) {
@@ -8365,7 +8392,7 @@ function sourceOrdinalFor(item) {
 
 function renderInto(items, live = false) {
   // Claude 会话：给 #log 挂 cl-inline，工具行走扁平（去背景条）终端式清单
-  $("log").classList.toggle("cl-inline", app.agent === "claude");
+  $("log").classList.toggle("cl-inline", app.agent === "claude" || app.agent === "opencode");
   // 回放（从头读）：新内容追加在下方，读者自己往下滚，绝不替他跳到末尾
   const stick = !app.replayMode && !app.loadingEarlier && nearBottom();
   const frag = document.createDocumentFragment();
@@ -8374,7 +8401,7 @@ function renderInto(items, live = false) {
   if (live && app.driver === "desktop") desktopIdleArm();
   // 桌面驱动 Claude 会话的运行态推断（见 claudeTailPulse）：先点亮，本批 token 才会被计入
   let claudeEndTurn = false;
-  if (live && app.agent === "claude" && items.some(isClaudeItem)) {
+  if (live && (app.agent === "claude" || app.agent === "opencode") && items.some(isClaudeItem)) {
     claudeEndTurn = items.some((it) => isClaudeItem(it)
       && (it.message?.role || it.type) === "assistant" && it.message?.stop_reason === "end_turn");
     if (!claudeEndTurn) claudeTailPulse(); // 中途增量：运行中；仅含 end_turn 的收尾批不点亮
@@ -8407,7 +8434,7 @@ function renderInto(items, live = false) {
   };
   // 单条气泡 → 节点（codex 与 Claude 共用；Claude 一条消息含多块，逐块调用）。
   // Claude 全程内联（对标终端 scrollback）；ChatGPT 运行中也平铺显示，完成后统一折叠中间过程。
-  const inline = app.agent === "claude";
+  const inline = (app.agent === "claude" || app.agent === "opencode");
   const emitBubbleNow = (bubble, sourceItem) => {
     if (isDuplicateTranscriptBubble(app.lastTranscriptBubble, bubble, sourceItem)) return;
     // 即使历史模式会隐藏 commentary，也要先记住它的文本来源。旧版 rollout 常在若干
@@ -8551,7 +8578,7 @@ function renderInto(items, live = false) {
   if (desktopEnded) setRunning(false);
   // Claude 快照/历史回放里没有 task_complete 事件收组：一轮结束且非运行态时兜底收拢，
   // 把末尾结论挪出组外。运行中（app.running）不收，留给 onLive 的 turn/completed。
-  if (app.agent === "claude" && !app.running && app.proc?.wrap) procFinish(null);
+  if ((app.agent === "claude" || app.agent === "opencode") && !app.running && app.proc?.wrap) procFinish(null);
   // 有真实内容渲染时，清掉"新会话"空态提示（否则增量消息会追加在它下面）
   if (frag.firstChild) $("emptyhint")?.remove();
   $("log").appendChild(frag);
@@ -8810,7 +8837,7 @@ function onLive(event, params) {
     app.stream?.el.querySelector(".cursor")?.remove();
     // Claude 无 task_complete 落盘事件（不像 codex 排在 tail 里）：靠这条 live 事件收组，把末尾结论挪出
     // 「处理过程」组外；随后到达的 assistant 因 app.proc 已空而落在组外。（总结行由 tail 的 end_turn 条目就地钉。）
-    if (app.agent === "claude") procFinish(null);
+    if (app.agent === "claude" || app.agent === "opencode") procFinish(null);
     refreshTitle();
     return;
   }

@@ -2,7 +2,7 @@
 // 仅缓存静态壳（HTML/manifest/图标），让"添加到主屏幕"离线也能打开界面。
 // 绝不缓存动态数据——会话内容走 WebSocket（不经 SW），故无需担心陈旧数据。
 // 更新策略：导航请求 network-first（始终尝试拿最新 index.html），离线回退缓存。
-const CACHE = "pocket-agent-shell-v10"; // v10：补齐无 ordinal 会话去重边界，保留远距离同文追问
+const CACHE = "pocket-agent-shell-v12"; // v12：新增 OpenCode agent，并完善异步轮次状态对账
 const SHELL = [
   "./",
   "./index.html",
