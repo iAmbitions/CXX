@@ -1,6 +1,7 @@
 // 拉起并驱动 codex app-server（JSON-RPC over WebSocket）
 import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readdirSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { codexInvocation } from "./codex-path.mjs";
@@ -27,6 +28,89 @@ export function singleFlight(inFlight, key, task) {
     if (inFlight.get(key) === pending) inFlight.delete(key);
   }).catch(() => {});
   return pending;
+}
+
+const ROLLOUT_DIR_CACHE_MS = 1_000;
+const rolloutDirCache = new Map();
+
+function timestampMs(value) {
+  const n = Number(value) || 0;
+  if (!n) return 0;
+  return n < 10_000_000_000 ? n * 1000 : n;
+}
+
+function cachedRolloutNames(dir, now) {
+  const cached = rolloutDirCache.get(dir);
+  if (cached && now - cached.at < ROLLOUT_DIR_CACHE_MS) return cached.names;
+  let names = [];
+  try { names = readdirSync(dir); } catch {}
+  rolloutDirCache.set(dir, { at: now, names });
+  return names;
+}
+
+function addDateDir(dirs, sessionsRoot, date, utc = false) {
+  if (!sessionsRoot || !Number.isFinite(date.getTime())) return;
+  const year = utc ? date.getUTCFullYear() : date.getFullYear();
+  const month = (utc ? date.getUTCMonth() : date.getMonth()) + 1;
+  const day = utc ? date.getUTCDate() : date.getDate();
+  dirs.add(join(sessionsRoot, String(year), String(month).padStart(2, "0"), String(day).padStart(2, "0")));
+}
+
+function sessionsRootFromRolloutPath(path) {
+  if (!path) return null;
+  const dayDir = dirname(path);
+  const monthDir = dirname(dayDir);
+  const yearDir = dirname(monthDir);
+  if (!/^\d{2}$/.test(basename(dayDir)) || !/^\d{2}$/.test(basename(monthDir)) || !/^\d{4}$/.test(basename(yearDir))) return null;
+  return dirname(yearDir);
+}
+
+// Codex Desktop can abort an initial rollout and continue the same thread in a new
+// suffixed JSONL file. Current app-server versions may keep returning the first path
+// while updatedAt/name/status come from the continuation. That makes the phone tail
+// the aborted file and also hides the desktop-active badge. Resolve all same-thread
+// candidates and select the file actually written most recently.
+export function resolveCodexRolloutPath(thread, now = Date.now()) {
+  const reported = typeof thread?.path === "string" ? thread.path : null;
+  const threadId = String(thread?.id || "");
+  if (!reported || !/^[0-9a-f-]{20,}$/i.test(threadId)) return reported;
+
+  const dirs = new Set([dirname(reported)]);
+  const sessionsRoot = sessionsRootFromRolloutPath(reported);
+  const updatedMs = timestampMs(thread?.updatedAt);
+  if (sessionsRoot && updatedMs) {
+    // Filename directories follow local time on desktop today, but checking UTC and
+    // adjacent days also covers timezone changes and continuations across midnight.
+    for (const delta of [-86_400_000, 0, 86_400_000]) {
+      const date = new Date(updatedMs + delta);
+      addDateDir(dirs, sessionsRoot, date, false);
+      addDateDir(dirs, sessionsRoot, date, true);
+    }
+  }
+
+  const candidates = new Set([reported]);
+  const exact = `-${threadId}.jsonl`;
+  const continued = `-${threadId}_`;
+  for (const dir of dirs) {
+    for (const name of cachedRolloutNames(dir, now)) {
+      if (name.endsWith(exact) || (name.includes(continued) && name.endsWith(".jsonl"))) {
+        candidates.add(join(dir, name));
+      }
+    }
+  }
+
+  let best = reported;
+  let bestMtime = -1;
+  for (const path of candidates) {
+    try {
+      const info = statSync(path);
+      if (info.isFile() && info.mtimeMs > bestMtime) {
+        best = path;
+        bestMtime = info.mtimeMs;
+      }
+    } catch {}
+  }
+  return best;
 }
 
 export function appServerSpawnOptions(env = null) {
@@ -251,7 +335,7 @@ export class AppServer {
 
   // 引擎 thread 条目 → 手机端精简视图（含 rollout path，仅 daemon 内部用）
   #mapThread(t) {
-    return {
+    const thread = {
       id: t.id,
       preview: t.preview ?? "",
       name: t.name ?? null,
@@ -262,6 +346,8 @@ export class AppServer {
       archived: Boolean(t.archived ?? t.archivedAt ?? t.archived_at),
       path: t.path ?? null,
     };
+    thread.path = resolveCodexRolloutPath(thread);
+    return thread;
   }
 
   // 分批拉取（供 sessions.list 分页应答）。无 cwd 时按引擎游标分页；有 cwd 时直接从
