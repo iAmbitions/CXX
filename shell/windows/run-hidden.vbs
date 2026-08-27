@@ -1,4 +1,4 @@
-' CXX remote daemon hidden launcher.
+' Pocket Agent remote daemon hidden launcher.
 '
 ' Arguments:
 '   0 = executable path, usually cxx-daemon.exe

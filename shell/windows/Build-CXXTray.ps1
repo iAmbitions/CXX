@@ -11,14 +11,14 @@ if (!$SourceRoot) {
 $SourceRoot = [System.IO.Path]::GetFullPath($SourceRoot)
 
 if (!$OutFile) {
-  $OutFile = Join-Path $SourceRoot "dist\win\CXX\CXX.exe"
+  $OutFile = Join-Path $SourceRoot "dist\win\PocketAgent\PocketAgent.exe"
 }
 
 $SourceFile = Join-Path $SourceRoot "shell\windows\CXXTray.cs"
 $IconFile = Join-Path $SourceRoot "packaging\windows\cxx.ico"
 
 if (!(Test-Path $SourceFile)) {
-  throw "CXXTray.cs not found: $SourceFile"
+  throw "Pocket Agent tray source not found: $SourceFile"
 }
 
 $Candidates = @(
@@ -62,10 +62,10 @@ $Args += $SourceFile
 & $Csc @Args
 
 if ($LASTEXITCODE -ne 0) {
-  throw "CXX.exe compile failed with exit code $LASTEXITCODE."
+  throw "PocketAgent.exe compile failed with exit code $LASTEXITCODE."
 }
 if (!(Test-Path $OutFile)) {
-  throw "CXX.exe was not created: $OutFile"
+  throw "PocketAgent.exe was not created: $OutFile"
 }
 
 Get-Item $OutFile | Select-Object FullName,Length,LastWriteTime

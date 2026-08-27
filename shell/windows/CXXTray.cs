@@ -1,4 +1,4 @@
-// CXX Windows tray shell.
+// Pocket Agent Windows tray shell.
 //
 // Thin view: each action shells out to the bundled daemon and parses one JSON
 // object from stdout. The daemon lifecycle is owned by Task Scheduler.
@@ -30,7 +30,7 @@ namespace CXX
             bool openPair = HasFlag(args, "--pair");
             if (DaemonPath == null)
             {
-                MessageBox.Show(L("找不到后台程序。请重新安装 CXX，或设置 CXX_DAEMON_BIN。", "The background daemon was not found. Reinstall CXX or set CXX_DAEMON_BIN."), "CXX");
+                MessageBox.Show(L("找不到后台程序。请重新安装口袋Agent，或设置 CXX_DAEMON_BIN。", "The background daemon was not found. Reinstall Pocket Agent or set CXX_DAEMON_BIN."), "Pocket Agent");
                 return;
             }
 
@@ -335,7 +335,7 @@ namespace CXX
             {
                 Visible = true,
                 Icon = TrayIcons.Get(IconState.Disabled),
-                Text = "CXX Remote",
+                Text = "Pocket Agent Remote",
                 ContextMenuStrip = new ContextMenuStrip(),
             };
             tray.ContextMenuStrip.Opening += delegate(object s, System.ComponentModel.CancelEventArgs e) { e.Cancel = false; RebuildMenu(); };
@@ -365,9 +365,9 @@ namespace CXX
             bool running = Backend.Bool(st, "running");
             IconState s = !enabled ? IconState.Disabled : (running ? IconState.Running : IconState.Warning);
             tray.Icon = TrayIcons.Get(s);
-            tray.Text = !enabled ? I18n.L("CXX 远程：未启用", "CXX Remote: off")
-                      : running ? I18n.L("CXX 远程：运行中", "CXX Remote: running")
-                      : I18n.L("CXX 远程：已启用但未运行", "CXX Remote: enabled but not running");
+            tray.Text = !enabled ? I18n.L("口袋Agent远程：未启用", "Pocket Agent Remote: off")
+                      : running ? I18n.L("口袋Agent远程：运行中", "Pocket Agent Remote: running")
+                      : I18n.L("口袋Agent远程：已启用但未运行", "Pocket Agent Remote: enabled but not running");
         }
 
         void RebuildMenu()
@@ -400,7 +400,6 @@ namespace CXX
                 AddItem(m, I18n.L("扫码配对手机...", "Pair phone with QR..."), delegate { DoPair(); });
             }
             m.Items.Add(new ToolStripSeparator());
-            AddItem(m, I18n.L("检查更新...", "Check for updates..."), delegate { DoCheckUpdate(); });
             AddItem(m, I18n.L("反馈问题", "Report an issue"), delegate { DoReportIssue(); });
             AddItem(m, enabled ? I18n.L("退出托盘（远程继续运行）", "Quit tray (remote keeps running)") : I18n.L("退出托盘", "Quit tray"), delegate { DoQuit(); });
         }
@@ -444,8 +443,8 @@ namespace CXX
                     Alert(
                         I18n.L("后台启动失败", "Background service failed to start"),
                         I18n.L(
-                            "CXX 已开启计划任务，但后台服务没有成功运行。请查看日志：",
-                            "CXX enabled the scheduled task, but the background service is not running. Check the log: "
+                            "口袋Agent已开启计划任务，但后台服务没有成功运行。请查看日志：",
+                            "Pocket Agent enabled the scheduled task, but the background service is not running. Check the log: "
                         ) + DaemonLogPath() + "\n\n" +
                         I18n.L(
                             "如果仍然无法解决，请带上这份日志到 GitHub Issues 反馈：",
@@ -504,50 +503,6 @@ namespace CXX
             ExitThread();
         }
 
-        // 检查更新：daemon 的 check-update 查 GitHub 最新 release（网络最长 8 秒），
-        // 放后台线程避免卡托盘菜单；MessageBox 跨线程弹是安全的。
-        void DoCheckUpdate()
-        {
-            var t = new Thread(delegate()
-            {
-                var res = Backend.Call("check-update");
-                string page = Backend.Str(res, "url") ?? "https://github.com/iAmbitions/CXX/releases/latest";
-                string current = Backend.Str(res, "current") ?? "?";
-                string err = Backend.Str(res, "error");
-                // 成功响应必带 latest；两者皆无 = daemon 没吐 JSON（版本过旧不认识
-                // check-update、或启动即崩，Backend.Call 都返回空字典）——不能当"已是最新"。
-                if (err == null && Backend.Str(res, "latest") == null)
-                    err = I18n.L("后台服务没有返回检查结果（可能版本过旧或未能启动）。",
-                                 "The background service returned no result (it may be outdated or failed to start).");
-                if (err != null)
-                {
-                    var r = MessageBox.Show(
-                        err + "\n\n" + I18n.L("是否打开发布页手动查看？", "Open the releases page to check manually?"),
-                        I18n.L("检查更新失败", "Update check failed"),
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                    if (r == DialogResult.Yes) OpenUrl(page);
-                    return;
-                }
-                string latest = Backend.Str(res, "latest") ?? "?";
-                if (Backend.Bool(res, "update"))
-                {
-                    var r = MessageBox.Show(
-                        I18n.L("最新版本 v", "Latest is v") + latest + I18n.L("，当前 v", "; you have v") + current + I18n.L("。是否前往下载？", ". Download now?"),
-                        I18n.L("发现新版本", "Update available"),
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                    if (r == DialogResult.Yes) OpenUrl(page);
-                }
-                else
-                {
-                    MessageBox.Show(
-                        I18n.L("当前 v", "v") + current + I18n.L(" 就是最新版本。", " is the latest version."),
-                        I18n.L("已是最新版本", "Up to date"),
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-            }) { IsBackground = true };
-            t.Start();
-        }
-
         void OpenUrl(string url)
         {
             try
@@ -574,7 +529,7 @@ namespace CXX
 
         void ShowQR(string url, string qrPath)
         {
-            var form = MakeWindow(I18n.L("微信扫码 · 配对 CXX", "Pair CXX"), 420, 620);
+            var form = MakeWindow(I18n.L("微信扫码 · 配对口袋Agent", "Pair Pocket Agent"), 420, 620);
             var root = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -594,7 +549,7 @@ namespace CXX
                 root.Controls.Add(c);
             };
 
-            addCentered(new Label { Text = I18n.L("微信扫码 · 配对 CXX", "Pair CXX"), Font = FontTitle, AutoSize = true }, 6);
+            addCentered(new Label { Text = I18n.L("微信扫码 · 配对口袋Agent", "Pair Pocket Agent"), Font = FontTitle, AutoSize = true }, 6);
             addCentered(new Label { Text = I18n.L("远程已开启", "Remote is on"), ForeColor = Color.Gray, AutoSize = true }, 12);
 
             var card = new Panel { Width = 320, Height = 320, BackColor = Color.White };
@@ -707,25 +662,19 @@ namespace CXX
             form.Show();
         }
 
-        static readonly string[] NotifyTypes = { "bark", "serverchan", "wecom", "dingtalk", "custom" };
-
         void ShowNotify()
         {
-            var form = MakeWindow(I18n.L("通知设置", "Notifications"), 440, 500);
+            var form = MakeWindow(I18n.L("京Me通知", "JingMe notifications"), 440, 470);
             var root = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(16), AutoScroll = true };
             form.Controls.Add(root);
 
-            root.Controls.Add(new Label { Text = I18n.L("添加通知渠道", "Add channel"), Font = FontSection, AutoSize = true, Margin = new Padding(0, 0, 0, 6) });
-            var combo = new ComboBox { Width = 360, DropDownStyle = ComboBoxStyle.DropDownList };
-            combo.Items.AddRange(new object[] { "Bark", "Server酱", "企业微信", "钉钉", I18n.L("自定义", "Custom") });
-            combo.SelectedIndex = 0;
-            root.Controls.Add(combo);
+            root.Controls.Add(new Label { Text = I18n.L("京Me机器人通知", "JingMe robot notifications"), Font = FontSection, AutoSize = true, Margin = new Padding(0, 0, 0, 6) });
+            root.Controls.Add(new Label { Text = I18n.L("仅支持京Me机器人。输入接收通知的 ERP。", "Only the JingMe robot is supported. Enter the recipient ERP."), ForeColor = Color.Gray, AutoSize = true, Margin = new Padding(0, 0, 0, 6) });
             var field = new TextBox { Width = 360, Margin = new Padding(0, 6, 0, 6) };
             root.Controls.Add(field);
-            root.Controls.Add(new Label { Text = I18n.L("Bark/Server酱 填 Key；其余填 Webhook URL", "Bark/ServerChan use Key; others use Webhook URL"), ForeColor = Color.Gray, AutoSize = true, Margin = new Padding(0, 0, 0, 6) });
 
             var btnRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, Width = 360, Height = 36, WrapContents = false };
-            var addBtn = new Button { Text = I18n.L("添加", "Add"), Width = 90, Height = 28, FlatStyle = FlatStyle.System };
+            var addBtn = new Button { Text = I18n.L("添加接收人", "Add recipient"), Width = 100, Height = 28, FlatStyle = FlatStyle.System };
             var testBtn = new Button { Text = I18n.L("发送测试", "Test"), Width = 100, Height = 28, FlatStyle = FlatStyle.System };
             btnRow.Controls.Add(addBtn);
             btnRow.Controls.Add(testBtn);
@@ -733,21 +682,23 @@ namespace CXX
 
             addBtn.Click += delegate
             {
-                string json = NotifyJson(combo.SelectedIndex, field.Text.Trim());
-                if (json == null) { Alert(I18n.L("请填写", "Missing input"), I18n.L("请填入 Key 或 Webhook URL", "Enter a Key or Webhook URL")); return; }
-                Backend.CallWithInput("notify-add", json);
+                string json = JingmeNotifyJson(field.Text.Trim());
+                if (json == null) { Alert(I18n.L("请填写 ERP", "ERP required"), I18n.L("请填入接收通知的 ERP", "Enter the recipient ERP")); return; }
+                var r = Backend.CallWithInput("notify-add", json);
+                if (!Backend.Bool(r, "ok")) { Alert(I18n.L("添加失败", "Could not add"), Backend.Str(r, "error") ?? I18n.L("请检查 ERP 和本机机器人配置。", "Check the ERP and local robot configuration.")); return; }
                 form.Close();
                 ShowNotify();
             };
             testBtn.Click += delegate
             {
-                string json = NotifyJson(combo.SelectedIndex, field.Text.Trim());
-                if (json == null) { Alert(I18n.L("请填写", "Missing input"), I18n.L("请填入 Key 或 Webhook URL", "Enter a Key or Webhook URL")); return; }
+                string json = JingmeNotifyJson(field.Text.Trim());
+                if (json == null) { Alert(I18n.L("请填写 ERP", "ERP required"), I18n.L("请填入接收通知的 ERP", "Enter the recipient ERP")); return; }
                 var r = Backend.CallWithInput("notify-test", json);
-                Alert(I18n.L("已发送", "Sent"), I18n.L("已向 ", "Sent to ") + Backend.Long(r, "count") + I18n.L(" 个渠道发送测试通知。", " channel(s)."));
+                if (!Backend.Bool(r, "ok")) { Alert(I18n.L("未发送", "Not sent"), Backend.Str(r, "error") ?? I18n.L("京Me机器人发送失败，请检查本机网络和机器人配置。", "JingMe delivery failed; check the local network and robot configuration.")); return; }
+                Alert(I18n.L("已发送", "Sent"), I18n.L("已发送京Me测试通知，请检查京Me。", "A JingMe test was sent."));
             };
 
-            root.Controls.Add(new Label { Text = I18n.L("已配置：", "Configured:"), AutoSize = true, Margin = new Padding(0, 10, 0, 4) });
+            root.Controls.Add(new Label { Text = I18n.L("已配置接收人：", "Configured recipients:"), AutoSize = true, Margin = new Padding(0, 10, 0, 4) });
             var list = Backend.Call("notify-list");
             object[] notifiers = (list != null && list.ContainsKey("notifiers")) ? list["notifiers"] as object[] : new object[0];
             foreach (var on in notifiers ?? new object[0])
@@ -763,7 +714,8 @@ namespace CXX
                 test.Click += delegate
                 {
                     var r = Backend.Call("notify-test-index", capIdx.ToString());
-                    Alert(I18n.L("已发送", "Sent"), I18n.L("已向 ", "Sent to ") + Backend.Long(r, "count") + I18n.L(" 个渠道发送测试通知。", " channel(s)."));
+                    if (!Backend.Bool(r, "ok")) { Alert(I18n.L("未发送", "Not sent"), Backend.Str(r, "error") ?? I18n.L("京Me机器人发送失败，请检查本机网络和机器人配置。", "JingMe delivery failed; check the local network and robot configuration.")); return; }
+                    Alert(I18n.L("已发送", "Sent"), I18n.L("已发送京Me测试通知，请检查京Me。", "A JingMe test was sent."));
                 };
                 rowPanel.Controls.Add(test);
                 var del = new Button { Text = I18n.L("删除", "Remove"), Width = 70, Height = 26, Left = 315, Top = 2, FlatStyle = FlatStyle.System };
@@ -775,13 +727,10 @@ namespace CXX
             form.Show();
         }
 
-        static string NotifyJson(int selectedIndex, string value)
+        static string JingmeNotifyJson(string erp)
         {
-            if (string.IsNullOrEmpty(value)) return null;
-            string type = NotifyTypes[selectedIndex];
-            if (type == "bark" || type == "serverchan")
-                return "{\"type\":\"" + type + "\",\"key\":\"" + JsonEsc(value) + "\"}";
-            return "{\"type\":\"" + type + "\",\"url\":\"" + JsonEsc(value) + "\"}";
+            if (string.IsNullOrEmpty(erp)) return null;
+            return "{\"type\":\"jingme\",\"erp\":\"" + JsonEsc(erp) + "\"}";
         }
 
         Form MakeWindow(string title, int w, int h)
