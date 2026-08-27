@@ -92,7 +92,7 @@ mkdirSync(outDir, { recursive: true });
 
 // 1. bundle ESM -> single CJS. --format=cjs is required: SEA runs the main as CommonJS.
 // The SEA binary carries no package.json, so the version is burned in here via define
-// (consumed by daemon/src/version.mjs for the tray "check update" comparison).
+// (consumed by daemon/src/version.mjs for packaged version/status output).
 const pkgVersion =
   process.env.CXX_VERSION ||
   JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;

@@ -13,7 +13,7 @@ if (!$ProjectRoot) {
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 
 if (!$StageRoot) {
-  $StageRoot = Join-Path $ProjectRoot "dist\win\CXX"
+  $StageRoot = Join-Path $ProjectRoot "dist\win\PocketAgent"
 }
 $StageRoot = [System.IO.Path]::GetFullPath($StageRoot)
 
@@ -32,7 +32,7 @@ $IconFile = Join-Path $ProjectRoot "packaging\windows\cxx.ico"
 if (!(Test-Path -LiteralPath $StageRoot)) {
   throw "StageRoot not found: $StageRoot. Run scripts\build-win.ps1 first."
 }
-foreach ($name in @("CXX.exe", "resources\cxx-daemon.exe", "resources\run-hidden.vbs", "resources\menubar.png")) {
+foreach ($name in @("PocketAgent.exe", "resources\cxx-daemon.exe", "resources\run-hidden.vbs", "resources\menubar.png")) {
   if (!(Test-Path -LiteralPath (Join-Path $StageRoot $name))) {
     throw "Required staged file missing: $name"
   }
@@ -60,7 +60,7 @@ if (!$Iscc) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-$OutputBaseFilename = "CXX-$Version-win-x64"
+$OutputBaseFilename = "Pocket-Agent-$Version-win-x64"
 
 & $Iscc "/DSourceRoot=$StageRoot" "/DOutputDir=$OutputDir" "/DMyAppVersion=$Version" "/DOutputBaseFilename=$OutputBaseFilename" "/DIconFile=$IconFile" $IssPath
 if ($LASTEXITCODE -ne 0) {

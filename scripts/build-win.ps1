@@ -11,7 +11,7 @@ if (!$ProjectRoot) {
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 
 if (!$StageRoot) {
-  $StageRoot = Join-Path $ProjectRoot "dist\win\CXX"
+  $StageRoot = Join-Path $ProjectRoot "dist\win\PocketAgent"
 }
 $StageRoot = [System.IO.Path]::GetFullPath($StageRoot)
 
@@ -52,13 +52,13 @@ Copy-File (Join-Path $ProjectRoot "README.md") (Join-Path $StageRoot "README.md"
 Copy-File (Join-Path $ProjectRoot "README.en.md") (Join-Path $StageRoot "README.en.md")
 Copy-File (Join-Path $ProjectRoot "LICENSE") (Join-Path $StageRoot "LICENSE")
 
-& (Join-Path $ProjectRoot "shell\windows\Build-CXXTray.ps1") -SourceRoot $ProjectRoot -OutFile (Join-Path $StageRoot "CXX.exe")
+& (Join-Path $ProjectRoot "shell\windows\Build-CXXTray.ps1") -SourceRoot $ProjectRoot -OutFile (Join-Path $StageRoot "PocketAgent.exe")
 if ($LASTEXITCODE -ne 0) {
-  throw "CXX.exe build failed with exit code $LASTEXITCODE."
+  throw "PocketAgent.exe build failed with exit code $LASTEXITCODE."
 }
 
 $Files = [ordered]@{}
-foreach ($name in @("CXX.exe", "cxx.cmd", "resources\cxx-daemon.exe", "resources\run-hidden.vbs", "resources\menubar.png", "README.md", "README.en.md", "LICENSE")) {
+foreach ($name in @("PocketAgent.exe", "cxx.cmd", "resources\cxx-daemon.exe", "resources\run-hidden.vbs", "resources\menubar.png", "README.md", "README.en.md", "LICENSE")) {
   $p = Join-Path $StageRoot $name
   $Files[$name] = [ordered]@{
     sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLowerInvariant()
@@ -67,7 +67,7 @@ foreach ($name in @("CXX.exe", "cxx.cmd", "resources\cxx-daemon.exe", "resources
 }
 
 $Manifest = [ordered]@{
-  name = "CXX"
+  name = "Pocket Agent"
   version = $Version
   platform = "win32"
   arch = "x64"

@@ -119,7 +119,7 @@ if (changed.length || removed.length || added.length) {
   show("changed", changed);
   show("added", added);
   show("removed", removed);
-  console.error("\n  Review the changes against CXX's daemon RPC usage, then run:");
+  console.error("\n  Review the changes against Pocket Agent's daemon RPC usage, then run:");
   console.error("    node scripts/check-schema.mjs --update");
   process.exit(1);
 }

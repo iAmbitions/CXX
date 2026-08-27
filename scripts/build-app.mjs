@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Assemble CXX.app: the macOS menu-bar shell with the daemon binary embedded.
+// Assemble 口袋Agent.app: the macOS menu-bar shell with the daemon binary embedded.
 //
 // Layout:
-//   CXX.app/Contents/
+//   口袋Agent.app/Contents/
 //     Info.plist                 (LSUIElement — menu-bar only, no dock icon)
-//     MacOS/cxx-menubar          (Swift shell, compiled with swiftc)
-//     Resources/cxx-daemon       (Node SEA daemon, spawned by the shell)
+//     MacOS/口袋Agent             (Swift shell, compiled with swiftc)
+//     Resources/口袋Agent         (Node SEA daemon, spawned by the shell)
 //     Resources/AppIcon.icns     (Finder/DMG app icon)
 //     Resources/menubar.png      (green transparent menu-bar glyph)
 //
@@ -19,13 +19,16 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distDir = join(root, "dist");
-const appDir = join(distDir, "CXX.app");
+const appDir = join(distDir, "口袋Agent.app");
 const contents = join(appDir, "Contents");
 const macosDir = join(contents, "MacOS");
 const resourcesDir = join(contents, "Resources");
-const daemonBin = join(distDir, "sea", "cxx-daemon");
+const daemonBin = join(distDir, "sea", "cxx-daemon"); // internal build artifact only
 const shellSrc = join(root, "shell", "macos", "Sources", "CXXMenuBar");
-const shellBin = join(macosDir, "cxx-menubar");
+const appExecutableName = "口袋Agent";
+const backgroundExecutableName = "口袋Agent";
+const shellBin = join(macosDir, appExecutableName);
+const bundledDaemonBin = join(resourcesDir, backgroundExecutableName);
 const iconDir = join(root, "web", "icons");
 const appIcon = join(iconDir, "AppIcon.icns");
 const menuBarIcon = join(iconDir, "menubar.png");
@@ -49,7 +52,7 @@ if (process.platform !== "darwin") {
 }
 
 // 1. Always rebuild the daemon SEA from the current source. Reusing an existing
-// dist/sea/cxx-daemon can silently bundle stale daemon code into a new CXX.app.
+// dist/sea/cxx-daemon can silently bundle stale daemon code into a new 口袋Agent.app.
 console.log("→ building fresh daemon SEA ...");
 run(process.execPath, [join(root, "scripts", "build-sea.mjs")]);
 
@@ -77,6 +80,7 @@ run("swiftc", [
   join(shellSrc, "DevicesWindow.swift"),
   join(shellSrc, "NotifyWindow.swift"),
   join(shellSrc, "TerminalWindow.swift"),
+  join(shellSrc, "ControlCenterWindow.swift"),
   join(shellSrc, "AppDelegate.swift"),
   join(shellSrc, "main.swift"),
   "-o",
@@ -93,8 +97,11 @@ run("swiftc", [
 chmodSync(shellBin, 0o755);
 
 // 4. embed the daemon
-copyFileSync(daemonBin, join(resourcesDir, "cxx-daemon"));
-chmodSync(join(resourcesDir, "cxx-daemon"), 0o755);
+// macOS Background Items uses the registered executable name in its user-facing
+// notification. Keep the bundled filename branded so the system says “口袋Agent”,
+// never the repository's historical internal binary name.
+copyFileSync(daemonBin, bundledDaemonBin);
+chmodSync(bundledDaemonBin, 0o755);
 // 4b. embed the pty-host (Resources/bin/cxx-pty-host)
 const binDir = join(resourcesDir, "bin");
 mkdirSync(binDir, { recursive: true });
@@ -115,10 +122,10 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>CXX</string>
-  <key>CFBundleDisplayName</key><string>C叉叉</string>
+  <key>CFBundleName</key><string>口袋Agent</string>
+  <key>CFBundleDisplayName</key><string>口袋Agent</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
-  <key>CFBundleExecutable</key><string>cxx-menubar</string>
+  <key>CFBundleExecutable</key><string>${appExecutableName}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
@@ -133,7 +140,7 @@ writeFileSync(join(contents, "Info.plist"), plist);
 
 // 6. sign nested-first, then the app deep
 console.log(`→ codesign (identity: ${identity}) ...`);
-run("codesign", ["--force", "--sign", identity, "--timestamp=none", join(resourcesDir, "cxx-daemon")]);
+run("codesign", ["--force", "--sign", identity, "--timestamp=none", bundledDaemonBin]);
 run("codesign", ["--force", "--sign", identity, "--timestamp=none", join(binDir, "cxx-pty-host")]);
 run("codesign", ["--force", "--deep", "--sign", identity, "--timestamp=none", appDir]);
 run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appDir]);
@@ -142,13 +149,13 @@ console.log(`\n✓ built ${appDir}`);
 
 // 7. optional DMG
 if (makeDmg) {
-  const dmg = join(distDir, `CXX-${VERSION}.dmg`);
+  const dmg = join(distDir, `Pocket-Agent-${VERSION}.dmg`);
   rmSync(dmg, { force: true });
   console.log("→ creating DMG ...");
   run("hdiutil", [
     "create",
     "-volname",
-    "CXX",
+    "口袋Agent",
     "-srcfolder",
     appDir,
     "-ov",
