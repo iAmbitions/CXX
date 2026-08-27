@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   OpenCodeBackend,
+  buildOpenCodeConfiguredModelCatalog,
   buildOpenCodeModelCatalog,
   openCodeMessageToTranscript,
   openCodePermissionRules,
@@ -15,7 +16,15 @@ import {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fakeOpenCode() {
+async function fakeOpenCode({
+  configResponse = { model: "p/default", permission: { "*": "ask" } },
+  providerResponse = {
+    connected: ["p"], default: { p: "default" }, all: [{ id: "p", name: "Provider", models: {
+      default: { id: "default", name: "Default", family: "x", variants: { high: {} }, status: "active" },
+      disabled: { id: "disabled", name: "Disabled", status: "disabled" },
+    } }],
+  },
+} = {}) {
   const streams = new Set();
   const requests = [];
   const sessions = new Map();
@@ -43,14 +52,9 @@ async function fakeOpenCode() {
       req.on("close", () => streams.delete(res));
       return;
     }
-    if (url.pathname === "/config") return json(res, { model: "p/default", permission: { "*": "ask" } });
+    if (url.pathname === "/config") return json(res, configResponse);
     if (url.pathname === "/session/status") return json(res, {});
-    if (url.pathname === "/provider") return json(res, {
-      connected: ["p"], default: { p: "default" }, all: [{ id: "p", name: "Provider", models: {
-        default: { id: "default", name: "Default", family: "x", variants: { high: {} }, status: "active" },
-        disabled: { id: "disabled", name: "Disabled", status: "disabled" },
-      } }],
-    });
+    if (url.pathname === "/provider") return json(res, providerResponse);
     if (url.pathname === "/experimental/session") return json(res, [...sessions.values()]);
     if (url.pathname === "/session" && req.method === "POST") {
       const id = "ses_test";
@@ -114,6 +118,21 @@ test("OpenCode model refs, permissions and transcript normalization", () => {
   assert.equal(entry.message.content[1].tool_use_id, "c1");
 });
 
+test("OpenCode configured catalog can be built from the small config response alone", () => {
+  const models = buildOpenCodeConfiguredModelCatalog({
+    model: "custom/chosen",
+    provider: { custom: { name: "Custom", models: {
+      chosen: { name: "Chosen", family: "x", variants: { high: {} } },
+      extra: { name: "Extra" },
+    } } },
+  });
+  assert.deepEqual(models.map((m) => [m.id, m.isDefault]), [
+    ["custom/chosen", true],
+    ["custom/extra", false],
+  ]);
+  assert.deepEqual(models[0].supportedReasoningEfforts, [{ reasoningEffort: "high" }]);
+});
+
 test("OpenCode model catalog prefers explicitly configured models over full connected catalogs", () => {
   const providers = {
     connected: ["builtin", "custom"],
@@ -148,6 +167,25 @@ test("OpenCode model catalog keeps the full connected list when no model allowli
     buildOpenCodeModelCatalog(providers, { model: "p/b" }).map((m) => [m.id, m.isDefault]),
     [["p/b", true], ["p/a", false]],
   );
+});
+
+test("OpenCode backend serves configured models from startup cache without loading the full provider catalog", async (t) => {
+  const fake = await fakeOpenCode({
+    configResponse: {
+      model: "custom/chosen",
+      permission: { "*": "ask" },
+      provider: { custom: { name: "Custom", models: { chosen: { name: "Chosen" } } } },
+    },
+  });
+  const baseDir = mkdtempSync(join(tmpdir(), "cxx-opencode-test-"));
+  const backend = makeBackend(fake, baseDir);
+  t.after(async () => { backend.stop(); await fake.close(); rmSync(baseDir, { recursive: true, force: true }); });
+  await backend.start();
+  const [first, second] = await Promise.all([backend.request("model/list"), backend.request("model/list")]);
+  assert.deepEqual(first.data.map((m) => m.id), ["custom/chosen"]);
+  assert.deepEqual(second.data.map((m) => m.id), ["custom/chosen"]);
+  assert.equal(fake.requests.filter((request) => request.path === "/provider").length, 0);
+  assert.equal(fake.requests.filter((request) => request.path === "/config").length, 1);
 });
 
 test("OpenCode backend lists global sessions and exposes one real default model", async (t) => {

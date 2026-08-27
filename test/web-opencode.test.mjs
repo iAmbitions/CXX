@@ -13,7 +13,9 @@ test("phone UI exposes OpenCode as a first-class agent and reuses structured tra
 });
 
 
-test("phone UI invalidates the model cache after daemon reconnect", () => {
+test("phone UI invalidates model cache only when the daemon process changes", () => {
   const onReady = source.slice(source.indexOf("session.onReady = async"), source.indexOf("session.connect().catch"));
+  assert.match(onReady, /modelDaemonInstance && app\.modelDaemonInstance && modelDaemonInstance !== app\.modelDaemonInstance/);
   assert.match(onReady, /app\.models = null;[\s\S]*modelsLoading = false;[\s\S]*prefetchModels\(\)/);
+  assert.doesNotMatch(onReady, /loadAgents\(\);[\s\S]{0,180}app\.models = null;/);
 });
