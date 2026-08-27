@@ -28,7 +28,7 @@ export async function handleStats(env, url) {
   }
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) {
     return htmlResponse(
-      `<h1>CXX 中继统计</h1>` +
+      `<h1>口袋 Agent 中继统计</h1>` +
         `<p>尚未配置 <code>CF_API_TOKEN</code> / <code>CF_ACCOUNT_ID</code>。</p>` +
         `<p>Cloudflare API Token 需要具备 <b>Account Analytics Read</b> 权限。</p>`,
     );
@@ -290,7 +290,7 @@ function renderStats(rows, apps = []) {
         .join("")
     : `<tr><td colspan="2" style="opacity:.6">暂无按应用标记的数据</td></tr>`;
   return (
-    `<h1>CXX 中继统计 · 近 7 天</h1>` +
+    `<h1>口袋 Agent 中继统计 · 近 7 天</h1>` +
     `<h2>应用拆分</h2>` +
     `<table class="mini"><thead><tr><th>应用</th><th>桌面</th></tr></thead>` +
     `<tbody>${appBody}</tbody></table>` +
@@ -317,7 +317,7 @@ function telegramEsc(value) {
 function htmlResponse(inner) {
   const doc =
     `<!doctype html><html lang="zh-CN"><meta charset="utf-8">` +
-    `<meta name="viewport" content="width=device-width,initial-scale=1"><title>CXX 中继统计</title>` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1"><title>口袋 Agent 中继统计</title>` +
     `<style>body{background:#0b0b0c;color:#e6e6e6;font:15px/1.6 -apple-system,system-ui,sans-serif;` +
     `max-width:1000px;margin:32px auto;padding:0 16px}h1{font-size:19px;font-weight:600}` +
     `h2{font-size:13px;margin:20px 0 6px;opacity:.7;font-weight:600}` +
