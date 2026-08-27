@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_BASE_URL="https://github.com/focuxdot/CXX/releases/latest/download"
+DEFAULT_BASE_URL="https://github.com/iAmbitions/CXX/releases/latest/download"
 BASE_URL="${CXX_BASE_URL:-${DEFAULT_BASE_URL}}"
 BASE_URL="${BASE_URL%/}"
 PACKAGE_REVISION="${CXX_PACKAGE_REVISION:-latest}"
@@ -21,7 +21,7 @@ log() {
 }
 
 fail() {
-  printf 'cxx installer: %s\n' "$*" >&2
+  printf 'Pocket Agent installer: %s\n' "$*" >&2
   exit 1
 }
 
@@ -70,7 +70,7 @@ verify_artifact() {
 # 直接敲 `cxx pair` / `cxx notify` / `cxx status` 等（与菜单栏 GUI 共用同一二进制、
 # 同一份 config）。best-effort：找不到可写的 PATH 目录也不影响 App 安装本身。
 link_cli() {
-  local target="/Applications/CXX.app/Contents/Resources/cxx-daemon"
+  local target="/Applications/口袋Agent.app/Contents/Resources/cxx-daemon"
   [ -x "${target}" ] || return 0
   # 优先选已在 PATH 上、当前用户可写的目录；都不行则退到 ~/.local/bin 并提示改 PATH。
   local dir=""
@@ -106,27 +106,29 @@ install_macos() {
   TMPDIR_CXX="$(mktemp -d)"
 
   local dmg mount app
-  dmg="${TMPDIR_CXX}/CXX-macos.dmg"
+  dmg="${TMPDIR_CXX}/Pocket-Agent-macos.dmg"
   mount="${TMPDIR_CXX}/mnt"
   mkdir -p "${mount}"
 
-  download "${BASE_URL}/CXX-macos.dmg?v=${PACKAGE_REVISION}" "${dmg}"
+  download "${BASE_URL}/Pocket-Agent-macos.dmg?v=${PACKAGE_REVISION}" "${dmg}"
   verify_artifact "${dmg}"
 
-  log "Mounting CXX installer image"
+  log "Mounting 口袋Agent installer image"
   hdiutil attach "${dmg}" -readonly -nobrowse -mountpoint "${mount}" >/dev/null
   trap 'hdiutil detach "${mount}" >/dev/null 2>&1 || true; cleanup' EXIT
 
-  app="${mount}/CXX.app"
-  [ -d "${app}" ] || fail "downloaded DMG does not contain CXX.app"
+  app="${mount}/口袋Agent.app"
+  [ -d "${app}" ] || fail "downloaded DMG does not contain 口袋Agent.app"
 
-  log "Installing CXX.app to /Applications"
+  log "Installing 口袋Agent.app to /Applications"
   # 覆盖前先退掉旧托盘：单实例锁（menu.lock）会让稍后的 open 变成空操作，
   # 不退的话用户手里还是旧托盘、看不到新菜单。
-  osascript -e 'quit app "CXX"' >/dev/null 2>&1 || true
+  osascript -e 'quit app "口袋Agent"' >/dev/null 2>&1 || true
+  osascript -e 'quit app "CXX"' >/dev/null 2>&1 || true  # 兼容旧版名称
+  rm -rf "/Applications/CXX.app"  # 清理旧版本应用；配置与已配对设备仍保留在 ~/.cxx
   pkill -f cxx-menubar >/dev/null 2>&1 || true
-  rm -rf "/Applications/CXX.app"
-  ditto "${app}" "/Applications/CXX.app"
+  rm -rf "/Applications/口袋Agent.app"
+  ditto "${app}" "/Applications/口袋Agent.app"
   hdiutil detach "${mount}" >/dev/null
   trap cleanup EXIT
 
@@ -137,14 +139,14 @@ install_macos() {
   # 旧 daemon 会抱着已删除的旧二进制继续跑，更新等于没装。enable 自带
   # bootout → bootstrap，并按新安装路径重写 plist。
   if [ -f "${HOME}/Library/LaunchAgents/ai.wokey.cxx.remote.plist" ]; then
-    log "Restarting CXX remote daemon"
-    "/Applications/CXX.app/Contents/Resources/cxx-daemon" enable >/dev/null 2>&1 \
+    log "Restarting 口袋Agent remote daemon"
+    "/Applications/口袋Agent.app/Contents/Resources/cxx-daemon" enable >/dev/null 2>&1 \
       || log "warning: daemon restart failed — toggle remote off/on from the menu-bar icon"
   fi
 
-  log "Opening CXX"
-  open "/Applications/CXX.app" || true
-  log "CXX installed. Use the menu-bar icon to pair your phone."
+  log "Opening 口袋Agent"
+  open "/Applications/口袋Agent.app" || true
+  log "口袋Agent installed. Use the menu-bar icon to pair your phone."
 }
 
 # Linux: CLI-only SEA binary (no tray/GUI). Installs as `cxx` on PATH.
@@ -204,12 +206,12 @@ install_linux() {
 
   # If the systemd user unit was already enabled, rewrite + restart onto the new binary.
   if [ -f "${HOME}/.config/systemd/user/cxx-remote.service" ]; then
-    log "Restarting CXX remote daemon"
+    log "Restarting 口袋Agent remote daemon"
     "${installed}" enable >/dev/null 2>&1 \
       || log "warning: daemon restart failed — run: ${installed} enable"
   fi
 
-  log "CXX (Linux CLI) installed."
+  log "Pocket Agent (Linux CLI) installed."
   log "Next:"
   log "  1. ${installed} enable          # systemd --user unit + start"
   log "  2. ${installed} pair            # print permanent device URL (JSON)"
@@ -222,7 +224,7 @@ main() {
   case "$(uname -s)" in
     Darwin) install_macos ;;
     Linux) install_linux ;;
-    *) fail "this installer supports macOS and Linux. Windows: irm https://github.com/focuxdot/CXX/releases/latest/download/install.ps1 | iex" ;;
+    *) fail "this installer supports macOS and Linux. Windows: irm https://github.com/iAmbitions/CXX/releases/latest/download/install.ps1 | iex" ;;
   esac
 }
 

@@ -1,33 +1,33 @@
-#define MyAppName "CXX"
+#define MyAppName "口袋Agent"
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
 #ifndef SourceRoot
-  #define SourceRoot "C:\CXX\dist\win\CXX"
+  #define SourceRoot "C:\PocketAgent\dist\win\PocketAgent"
 #endif
 #ifndef OutputDir
-  #define OutputDir "C:\CXX\dist\win\installer"
+  #define OutputDir "C:\PocketAgent\dist\win\installer"
 #endif
 #ifndef OutputBaseFilename
-  #define OutputBaseFilename "CXX-{#MyAppVersion}-win-x64"
+  #define OutputBaseFilename "Pocket-Agent-{#MyAppVersion}-win-x64"
 #endif
 #ifndef IconFile
-  #define IconFile "C:\CXX\packaging\windows\cxx.ico"
+  #define IconFile "C:\PocketAgent\packaging\windows\cxx.ico"
 #endif
 
 [Setup]
 AppId={{8E5F7645-5E87-48D1-A3F5-6C26A8C66E4F}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppPublisher=CXX
-DefaultDirName={localappdata}\Programs\CXX
-DefaultGroupName=CXX
+AppPublisher=Pocket Agent
+DefaultDirName={localappdata}\Programs\Pocket Agent
+DefaultGroupName=口袋Agent
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputBaseFilename={#OutputBaseFilename}
 OutputDir={#OutputDir}
 SetupIconFile={#IconFile}
-UninstallDisplayIcon={app}\CXX.exe
+UninstallDisplayIcon={app}\PocketAgent.exe
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -40,8 +40,8 @@ ChangesEnvironment=yes
 Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\CXX"; Filename: "{app}\CXX.exe"; Parameters: "--pair"; WorkingDir: "{app}"; IconFilename: "{app}\CXX.exe"
-Name: "{autodesktop}\CXX"; Filename: "{app}\CXX.exe"; Parameters: "--pair"; WorkingDir: "{app}"; IconFilename: "{app}\CXX.exe"; Tasks: desktopicon
+Name: "{group}\口袋Agent"; Filename: "{app}\PocketAgent.exe"; Parameters: "--pair"; WorkingDir: "{app}"; IconFilename: "{app}\PocketAgent.exe"
+Name: "{autodesktop}\口袋Agent"; Filename: "{app}\PocketAgent.exe"; Parameters: "--pair"; WorkingDir: "{app}"; IconFilename: "{app}\PocketAgent.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
@@ -53,12 +53,12 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
   ValueData: "{olddata};{app}"; Flags: preservestringtype; Check: NeedsAddPath('{app}')
 
 [Run]
-Filename: "{app}\CXX.exe"; Parameters: "--pair"; Description: "Launch CXX"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\PocketAgent.exe"; Parameters: "--pair"; Description: "Launch Pocket Agent"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/End /TN CXXRemote"; Flags: runhidden; RunOnceId: "EndCXXRemoteTask"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN CXXRemote /F"; Flags: runhidden; RunOnceId: "DelCXXRemoteTask"
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM CXX.exe /T"; Flags: runhidden; RunOnceId: "KillCXX"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM PocketAgent.exe /T"; Flags: runhidden; RunOnceId: "KillCXX"
 
 [Code]
 // PATH 里是否还没有 {app}（分号包裹后大小写不敏感地子串匹配，避免重复追加）。
@@ -106,7 +106,7 @@ begin
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN CXXRemote /F', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM CXX.exe /T', '',
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM PocketAgent.exe /T', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   AppDir := ExpandConstant('{app}');

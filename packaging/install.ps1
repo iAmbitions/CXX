@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$DefaultBaseUrl = "https://github.com/focuxdot/CXX/releases/latest/download"
+$DefaultBaseUrl = "https://github.com/iAmbitions/CXX/releases/latest/download"
 $BaseUrl = if ($env:CXX_BASE_URL) { $env:CXX_BASE_URL } else { $DefaultBaseUrl }
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $PackageRevision = if ($env:CXX_PACKAGE_REVISION) { $env:CXX_PACKAGE_REVISION } else { "latest" }
@@ -14,7 +14,7 @@ function Write-Log {
 
 function Fail {
   param([string]$Message)
-  Write-Error "cxx installer: $Message"
+  Write-Error "Pocket Agent installer: $Message"
   exit 1
 }
 
@@ -53,23 +53,23 @@ function Verify-Artifact {
 
 function Install-Windows {
   New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-  $Installer = Join-Path $TempDir "CXX-win-x64.exe"
-  Download-File "$BaseUrl/CXX-win-x64.exe?v=$PackageRevision" $Installer
+  $Installer = Join-Path $TempDir "Pocket-Agent-win-x64.exe"
+  Download-File "$BaseUrl/Pocket-Agent-win-x64.exe?v=$PackageRevision" $Installer
   Verify-Artifact $Installer
 
-  Write-Log "Installing CXX"
+  Write-Log "Installing Pocket Agent"
   $Args = @("/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=desktopicon")
   $Process = Start-Process -FilePath $Installer -ArgumentList $Args -Wait -PassThru
   if ($Process.ExitCode -ne 0) {
     Fail "installer exited with code $($Process.ExitCode)"
   }
 
-  $App = Join-Path $env:LOCALAPPDATA "Programs\CXX\CXX.exe"
+  $App = Join-Path $env:LOCALAPPDATA "Programs\Pocket Agent\PocketAgent.exe"
   if (Test-Path -LiteralPath $App) {
-    Write-Log "Opening CXX"
+    Write-Log "Opening Pocket Agent"
     Start-Process -FilePath $App -ArgumentList "--pair" | Out-Null
   }
-  Write-Log "CXX installed. Open CXX from the desktop or Start menu to pair your phone."
+  Write-Log "Pocket Agent installed. Open Pocket Agent from the desktop or Start menu to pair your phone."
 }
 
 try {
