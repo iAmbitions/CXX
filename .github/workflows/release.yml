@@ -41,6 +41,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: pty-host/go.mod
+          cache-dependency-path: pty-host/go.sum
       - name: Build macOS app and DMG
         run: npm run build:app -- --dmg
       - name: Prepare release assets
