@@ -1,6 +1,6 @@
 # Security model
 
-CXX is designed so that the relay — the one component that sees every connection — can decrypt
+Pocket Agent is designed so that the relay — the one component that sees every connection — can decrypt
 nothing. All application content is end-to-end encrypted between the daemon (your computer) and
 the client (your phone).
 
