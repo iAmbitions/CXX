@@ -87,7 +87,7 @@ jobs:
             echo "### Codex protocol schema" >> "$GITHUB_STEP_SUMMARY"
             echo "No drift from the committed baseline." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning title=Codex protocol schema drift::The latest Codex schema differs from the reviewed baseline. The end-to-end smoke test will determine whether CXX is still compatible."
+            echo "::warning title=Codex protocol schema drift::The latest Codex schema differs from the reviewed baseline. The end-to-end smoke test will determine whether Pocket Agent is still compatible."
             echo "### Codex protocol schema drift" >> "$GITHUB_STEP_SUMMARY"
             echo "The latest Codex schema differs from the reviewed baseline. This is recorded as a warning; the end-to-end smoke test remains the compatibility gate." >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -1,4 +1,4 @@
-name: Release CXX
+name: Release Pocket Agent
 
 on:
   workflow_dispatch:
@@ -48,8 +48,8 @@ jobs:
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           mkdir -p release-assets
-          cp "dist/CXX-${VERSION}.dmg" release-assets/CXX-macos.dmg
-          cp "dist/CXX-${VERSION}.dmg" "release-assets/CXX-${VERSION}-macos.dmg"
+          cp "dist/Pocket-Agent-${VERSION}.dmg" release-assets/Pocket-Agent-macos.dmg
+          cp "dist/Pocket-Agent-${VERSION}.dmg" "release-assets/Pocket-Agent-${VERSION}-macos.dmg"
           cp packaging/install.sh release-assets/install.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -77,8 +77,8 @@ jobs:
         run: |
           $Version = (Get-Content -Raw package.json | ConvertFrom-Json).version
           New-Item -ItemType Directory -Force release-assets | Out-Null
-          Copy-Item "dist\win\installer\CXX-$Version-win-x64.exe" "release-assets\CXX-win-x64.exe"
-          Copy-Item "dist\win\installer\CXX-$Version-win-x64.exe" "release-assets\CXX-$Version-win-x64.exe"
+          Copy-Item "dist\win\installer\Pocket-Agent-$Version-win-x64.exe" "release-assets\Pocket-Agent-win-x64.exe"
+          Copy-Item "dist\win\installer\Pocket-Agent-$Version-win-x64.exe" "release-assets\Pocket-Agent-$Version-win-x64.exe"
           Copy-Item "packaging\install.ps1" "release-assets\install.ps1"
       - uses: actions/upload-artifact@v4
         with:
@@ -187,11 +187,11 @@ jobs:
           if [ -s notes.md ]; then
             notes_args=(--notes-file notes.md)
           else
-            notes_args=(--notes "CXX release ${TAG}.")
+            notes_args=(--notes "Pocket Agent release ${TAG}.")
           fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" release-assets/* --clobber
-            gh release edit "${TAG}" --title "CXX ${TAG}" "${notes_args[@]}"
+            gh release edit "${TAG}" --title "Pocket Agent ${TAG}" "${notes_args[@]}"
           else
-            gh release create "${TAG}" release-assets/* "${draft_flag[@]}" --title "CXX ${TAG}" "${notes_args[@]}"
+            gh release create "${TAG}" release-assets/* "${draft_flag[@]}" --title "Pocket Agent ${TAG}" "${notes_args[@]}"
           fi
