@@ -1413,6 +1413,8 @@ export class ClientSession {
         deviceToken: paired.deviceToken,
         daemonName: paired.config.daemonName,
         protocol: APP_PROTOCOL,
+        daemonInstanceId: this.#daemon.daemonInstanceId,
+        daemonVersion: this.#daemon.daemonVersion,
         engine: this.#daemon.appServer.healthy ? "ok" : "down",
         caps: this.#daemonCaps(), // 能力回执：客户端据此等待图片推送（img）、发起直连升级（rtc）
       });
@@ -1477,6 +1479,8 @@ export class ClientSession {
         deviceToken: params.deviceToken,
         daemonName: this.#daemon.config.daemonName,
         protocol: APP_PROTOCOL,
+        daemonInstanceId: this.#daemon.daemonInstanceId,
+        daemonVersion: this.#daemon.daemonVersion,
         engine: this.#daemon.appServer.healthy ? "ok" : "down",
         // 观众端据此跳过看板直进会话只读视图。观众不回执 caps.img——观众连接
         // 不推图（见 #imgPushCap 注释），回执了会让观众端白等推送才回落拉取

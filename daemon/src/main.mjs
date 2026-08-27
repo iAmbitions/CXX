@@ -343,7 +343,10 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
   }
 
   const sessions = new Map(); // cid -> ClientSession
+  const daemonInstanceId = `${process.pid}-${Date.now()}`;
   const daemonContext = {
+    daemonInstanceId,
+    daemonVersion: cxxVersion(),
     config,
     configPath,
     privateKey: privateKeyFromPem(config.privateKeyPem),
@@ -520,7 +523,7 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
       log(`client 断开: ${cid}`);
       emit({ event: "clients", count: sessions.size });
     },
-  }, { version: cxxVersion() });
+  }, { version: cxxVersion(), instanceId: daemonInstanceId });
   relay.start();
   scheduleViewerStatusWrite(); // 启动即写：清掉异常退出残留的观众计数
 

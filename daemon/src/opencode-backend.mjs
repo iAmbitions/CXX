@@ -8,6 +8,8 @@ import { CachedProjects } from "./project-index.mjs";
 import { killProcessTree } from "./proc-reap.mjs";
 import { openCodeInvocation } from "./opencode-path.mjs";
 
+const MODEL_LIST_CACHE_MS = 60_000;
+
 function withQuery(path, values = {}) {
   const url = new URL(path, "http://127.0.0.1");
   for (const [key, value] of Object.entries(values)) {
@@ -153,6 +155,21 @@ function openCodeConfiguredModelRefs(config) {
   return refs;
 }
 
+export function buildOpenCodeConfiguredModelCatalog(config = {}) {
+  const providers = [];
+  for (const [providerID, provider] of Object.entries(config?.provider || {})) {
+    const entries = Object.entries(provider?.models || {});
+    if (!entries.length) continue;
+    providers.push({
+      id: providerID,
+      name: provider?.name || providerID,
+      models: Object.fromEntries(entries.map(([modelID, model]) => [modelID, { ...model, id: modelID }])),
+    });
+  }
+  if (!providers.length) return [];
+  return buildOpenCodeModelCatalog({ connected: providers.map((provider) => provider.id), all: providers }, config);
+}
+
 export function buildOpenCodeModelCatalog(providerResponse, configOrModel = null) {
   const config = configOrModel && typeof configOrModel === "object" ? configOrModel : {};
   const configuredModel = typeof configOrModel === "string" ? configOrModel : config.model || null;
@@ -195,7 +212,7 @@ export class OpenCodeBackend {
   #child = null; #closed = false; #abort = null; #eventTask = null; #eventReady = null; #resolveEventReady = null;
   #sessions = new Map(); #turns = new Map(); #failed = new Map(); #pending = new Map(); #ignoreBusyUntil = new Map();
   #pendingQuestions = new Map(); #syncTimers = new Map(); #partTypes = new Map(); #projects;
-  #defaultPermissions = [];
+  #defaultPermissions = []; #modelCache = null; #modelLoad = null;
   onNotification = () => {};
   onServerRequest = () => {};
   onServerRequestCancel = () => {};
@@ -242,6 +259,8 @@ export class OpenCodeBackend {
     try {
       const config = await this.#api("/config");
       this.#defaultPermissions = configPermissionRules(config?.permission);
+      const models = buildOpenCodeConfiguredModelCatalog(config);
+      if (models.length) this.#modelCache = { at: Date.now(), data: models };
     } catch {}
     try {
       const statuses = await this.#api("/session/status");
@@ -263,6 +282,8 @@ export class OpenCodeBackend {
     this.#syncTimers.clear();
     if (this.#child?.pid) killProcessTree(this.#child.pid, this.#log);
     this.#child = null;
+    this.#modelCache = null;
+    this.#modelLoad = null;
     this.healthy = false;
   }
 
@@ -582,11 +603,30 @@ export class OpenCodeBackend {
 
   async request(method) {
     if (method !== "model/list") return {};
-    const [providers, config] = await Promise.all([
-      this.#api("/provider"),
-      this.#api("/config").catch(() => ({})),
-    ]);
-    return { data: buildOpenCodeModelCatalog(providers, config) };
+    const now = Date.now();
+    if (this.#modelCache && now - this.#modelCache.at < MODEL_LIST_CACHE_MS) {
+      return { data: this.#modelCache.data };
+    }
+
+    // 同一时刻多个手机/RTC 热切换可能一起预取模型；合并成一次本机请求。
+    const load = this.#modelLoad ??= (async () => {
+      // /provider 是 OpenCode 的完整 models.dev 目录，本机实测可达数 MB，首次读取
+      // 需要数秒。显式配置过 provider.models 时，/config 已包含手机选择器需要的
+      // 名称、variants 与默认模型，直接从这个小响应构建，不再下载完整公共目录。
+      const config = await this.#api("/config").catch(() => ({}));
+      let data = buildOpenCodeConfiguredModelCatalog(config);
+      if (!data.length) {
+        const providers = await this.#api("/provider");
+        data = buildOpenCodeModelCatalog(providers, config);
+      }
+      this.#modelCache = { at: Date.now(), data };
+      return data;
+    })();
+    try {
+      return { data: await load };
+    } finally {
+      if (this.#modelLoad === load) this.#modelLoad = null;
+    }
   }
 
   async answerQuestion(id, requestId, answers) {
