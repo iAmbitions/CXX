@@ -3,17 +3,29 @@
 本项目所有值得留意的版本变更都记录在此。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-发布 `vX.Y.Z` tag 时，CI 会自动把对应版本段落作为 GitHub Release 的说明。早于 0.1.9 的版本变更未整理到本文件，可查看 [GitHub Releases](https://github.com/focuxdot/CXX/releases) 与提交历史。
+发布 `vX.Y.Z` tag 时，CI 会自动把对应版本段落作为 GitHub Release 的说明。早于 0.1.9 的版本变更未整理到本文件，可查看 [GitHub Releases](https://github.com/iAmbitions/CXX/releases) 与提交历史。
+
+## [0.1.16] - 2026-08-27
+
+### 新增
+- **OpenCode 一等支持**。手机端可像 ChatGPT 与 Claude Code 一样浏览和继续 OpenCode 会话，支持实时流式内容、工具调用、审批、问答、模型与推理档位、Fork、归档和中断；同时补齐常见安装路径、版本管理器、环境变量与 provider token 的发现逻辑。
+
+### 修复
+- **手机退出后桌面仍提示会话被占用**。最后一个手机观察者离开且轮次结束后，主动释放 ChatGPT app-server 订阅；多设备与运行中任务按需延迟释放，避免桌面端长期无法继续会话。
+
+### 调整
+- **移除“检查更新”**。macOS 菜单栏、Windows 托盘和命令行不再提供联网检查更新入口。
+- **统一产品名称为 Pocket Agent / 口袋 Agent**。README、发布标题、中继说明、服务描述和用户可见提示不再使用旧品牌名称；底层命令、配置目录和环境变量继续保留兼容。
 
 ## [0.1.12] - 2026-08-02
 
 ### 新增
-- **OneBot 11（NapCat）QQ 通知渠道**。支持通过 NapCat HTTP 服务器向 QQ 私聊或群聊发送 CXX 任务通知，可选 Bearer 令牌，并校验 HTTP 与 OneBot 业务响应。CLI 增加目标与地址校验，同步补充中英文说明及回归测试。
+- **OneBot 11（NapCat）QQ 通知渠道**。支持通过 NapCat HTTP 服务器向 QQ 私聊或群聊发送口袋 Agent 任务通知，可选 Bearer 令牌，并校验 HTTP 与 OneBot 业务响应。CLI 增加目标与地址校验，同步补充中英文说明及回归测试。
 
 ## [0.1.11] - 2026-07-17
 
 ### 修复
-- **Windows 中文账户名无法开启 CXX**。不再把 `whoami` 的本地代码页输出误当 UTF-8；改用 Windows 身份 API 获取规范账户名并显式输出 UTF-8，环境变量回退路径也保持 Unicode，确保中文电脑名、域名和用户名能完整写入计划任务的 `UserId`。
+- **Windows 中文账户名无法开启口袋 Agent**。不再把 `whoami` 的本地代码页输出误当 UTF-8；改用 Windows 身份 API 获取规范账户名并显式输出 UTF-8，环境变量回退路径也保持 Unicode，确保中文电脑名、域名和用户名能完整写入计划任务的 `UserId`。
 
 ## [0.1.10] - 2026-07-14
 

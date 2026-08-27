@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="web/icons/logo.svg" width="120" alt="C叉叉" />
+<img src="web/icons/logo.svg" width="120" alt="口袋Agent" />
 
-##  C叉叉是一个给 ChatGPT / Claude Code 加上微信远程接管能力的增强工具
+##  口袋Agent是一个给 ChatGPT / Claude Code / OpenCode 加上微信远程接管能力的增强工具
 
-<p><strong>在微信或任意手机浏览器里查看会话、审批命令、发起新一轮，并随时接管 <img src="public/icons/codex.svg" width="18" height="18" align="absmiddle" alt="ChatGPT" /> ChatGPT 和 <img src="public/icons/claude.svg" width="18" height="18" align="absmiddle" alt="Claude Code" /> Claude Code。</strong></p>
+<p><strong>在微信或任意手机浏览器里查看会话、审批命令、发起新一轮，并随时接管 <img src="public/icons/codex.svg" width="18" height="18" align="absmiddle" alt="ChatGPT" /> ChatGPT、<img src="public/icons/claude.svg" width="18" height="18" align="absmiddle" alt="Claude Code" /> Claude Code 和 OpenCode。</strong></p>
 
 <p>
   <img src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square" alt="MIT" />
@@ -17,9 +17,9 @@
 
 <br />
 
-<img src="public/media/wechat.png" width="820" alt="在微信里使用 C叉叉：会话列表 · 切换电脑 · 实时对话" />
+<img src="public/media/wechat.png" width="820" alt="在微信里使用 口袋Agent：会话列表 · 切换电脑 · 实时对话" />
 
-<sub>微信扫码即用 · ChatGPT / Claude Code 会话列表、查看会话、对话、新建 · 添加到浮窗后随时从聊天返回工作台</sub>
+<sub>微信扫码即用 · ChatGPT / Claude Code / OpenCode 会话列表、查看会话、对话、新建 · 添加到浮窗后随时从聊天返回工作台</sub>
 
 <br />
 
@@ -31,12 +31,12 @@
 
 ---
 
-ChatGPT 或 Claude Code 一跑就是十几分钟到几十分钟，你却被拴在电脑前。C叉叉 让你离开工位也能接着看任务进展、
-审批命令、发新指令；任务完成或卡住时，通过微信 / Bark / Telegram / Slack 等渠道通知你。
+ChatGPT、Claude Code 或 OpenCode 一跑就是十几分钟到几十分钟，你却被拴在电脑前。口袋Agent 让你离开工位也能接着看任务进展、
+审批命令、发新指令；任务完成或卡住时，通过京Me机器人通知你。
 
 
 > [!TIP]
-> **不绑死微信**：任何手机浏览器都能用；通知也支持 Bark、企业微信、钉钉、自定义 webhook。微信只是国内最顺手的那条路。
+> **不绑死微信**：任何手机浏览器都能用；任务通知统一通过京Me机器人发送。
 
 ## ✨ 为什么是「微信」
 
@@ -45,7 +45,7 @@ ChatGPT 或 Claude Code 一跑就是十几分钟到几十分钟，你却被拴�
 <td width="33%" valign="top">
 
 ### 🔔 微信主动喊你
-任务完成 / 需要审批时，通过配置多渠道推到微信公众号。
+任务完成 / 需要审批时，通过京Me机器人主动提醒。
 
 </td>
 <td width="33%" valign="top">
@@ -57,7 +57,7 @@ ChatGPT 或 Claude Code 一跑就是十几分钟到几十分钟，你却被拴�
 <td width="33%" valign="top">
 
 ### 🔒 加密照样成立
-微信/安卓内核普遍缺 WebCrypto 的 X25519，C叉叉 自带**纯 JS 后备实现**，原生不可用时自动降级，端到端加密不打折。
+微信/安卓内核普遍缺 WebCrypto 的 X25519，口袋Agent 自带**纯 JS 后备实现**，原生不可用时自动降级，端到端加密不打折。
 
 </td>
 </tr>
@@ -68,13 +68,13 @@ ChatGPT 或 Claude Code 一跑就是十几分钟到几十分钟，你却被拴�
 | | |
 | --- | --- |
 | 📱 **手机远程接管** | 看对话、审批命令/改动、发起新一轮、切换模型与推理档位、中断当前轮 |
-| 🧠 **双 Agent 支持** | ChatGPT 是默认后端；检测到 Claude Code CLI 时，手机端可在 ChatGPT / Claude Code 间切换 |
+| 🧠 **三 Agent 支持** | ChatGPT 是默认后端；检测到 Claude Code / OpenCode CLI 时，手机端可在 ChatGPT、Claude Code、OpenCode 间切换 |
 | ⌨️ **终端模式** | 在手机上开电脑的真终端窗口（xterm.js 全保真），Claude Code / OpenCode / Codex / Gemini CLI 或任意 Shell 都能远程跑；手机锁屏、daemon 更新重启都不丢会话 |
 | 🔔 **主动通知** | 任务完成或卡在审批时推到微信/手机；点通知深链直达对应会话 |
 | 📶 **同 WiFi 直连** | 手机和电脑在同一局域网时自动点对点直连，不经中继、毫秒级往返；离开局域网无缝回落 |
 | 🔒 **端到端加密** | X25519 + HKDF-SHA256 + AES-256-GCM，中继零知识，看不到你的代码、命令、对话 |
 | 👀 **只读围观分享** | 生成单会话只读链接，把 Agent 干活过程分享出去；观众能看能鼓掌，进不了你的上下文 |
-| 🖥️ **多机管理** | 一个微信浮窗管多台电脑上的 ChatGPT / Claude Code |
+| 🖥️ **多机管理** | 一个微信浮窗管多台电脑上的 ChatGPT / Claude Code / OpenCode |
 | 🧩 **零依赖 · 可自建** | daemon 零 npm 依赖；中继跑官方托管，也可一条命令自建 |
 
 ## 🏁 快速开始
@@ -84,22 +84,22 @@ ChatGPT 或 Claude Code 一跑就是十几分钟到几十分钟，你却被拴�
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/focuxdot/CXX/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/iAmbitions/CXX/releases/latest/download/install.sh | bash
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/focuxdot/CXX/releases/latest/download/install.ps1 | iex
+irm https://github.com/iAmbitions/CXX/releases/latest/download/install.ps1 | iex
 ```
 
 安装脚本会下载最新 GitHub Release 并校验 `checksums.txt`。
 
 - **macOS**：装入 `/Applications`，打开菜单栏 App 扫码配对。
 - **Linux**（CLI，无托盘）：装入 `~/.local/bin/cxx`，然后 `cxx enable` → `cxx pair`（把 JSON 里的 `url` 在手机打开）。SSH 要登出后仍常驻：`loginctl enable-linger $USER`。
-- **Windows**：运行安装包后打开 **CXX** 托盘配对。
+- **Windows**：运行安装包后打开 **口袋Agent** 托盘配对。
 
-备用安装包： [CXX-macos.dmg](https://github.com/focuxdot/CXX/releases/latest/download/CXX-macos.dmg) · [CXX-win-x64.exe](https://github.com/focuxdot/CXX/releases/latest/download/CXX-win-x64.exe) · [cxx-linux-x64](https://github.com/focuxdot/CXX/releases/latest/download/cxx-linux-x64) · [cxx-linux-arm64](https://github.com/focuxdot/CXX/releases/latest/download/cxx-linux-arm64)
+备用安装包： [Pocket-Agent-macos.dmg](https://github.com/iAmbitions/CXX/releases/latest/download/Pocket-Agent-macos.dmg) · [Pocket-Agent-win-x64.exe](https://github.com/iAmbitions/CXX/releases/latest/download/Pocket-Agent-win-x64.exe) · [cxx-linux-x64](https://github.com/iAmbitions/CXX/releases/latest/download/cxx-linux-x64) · [cxx-linux-arm64](https://github.com/iAmbitions/CXX/releases/latest/download/cxx-linux-arm64)
 
 ### 扫码 / 链接配对
 
@@ -111,7 +111,7 @@ irm https://github.com/focuxdot/CXX/releases/latest/download/install.ps1 | iex
 1. **启动菜单栏 / 托盘程序**。首次未开启远程，界面按系统语言显示中文或英文。
 2. 点图标 → **扫码配对手机…**：首次点击即隐式开启远程（装 LaunchAgent / 计划任务并拉起 daemon）→ **显示配对二维码**。
 3. **手机扫码配对**（微信「扫一扫」或浏览器）——凭据加密存在手机本地，之后免扫码直接进。
-4. **开始远程**：在手机上查看 / 接管电脑上的 ChatGPT 或 Claude Code 会话。
+4. **开始远程**：在手机上查看 / 接管电脑上的 ChatGPT、Claude Code 或 OpenCode 会话。
 
 **Linux（CLI）**
 
@@ -124,21 +124,15 @@ irm https://github.com/focuxdot/CXX/releases/latest/download/install.ps1 | iex
 
 ### 通知渠道
 
-任务完成或卡在审批时主动推到你手机。（国内参考Server 酱等渠道投递到微信公众号，秒收）：
+任务完成或卡在审批时，通过京Me机器人主动推送到你的手机：
 
 ```bash
-cxx notify --add serverchan --key <你的SendKey>   # Server 酱（微信），到 https://sct.ftqq.com/ 拿 SendKey
-cxx notify --add bark     --key <key>            # Bark（iOS，可 --server 自托管）
-cxx notify --add wecom    --url <url>            # 企业微信群机器人
-cxx notify --add dingtalk --url <url>            # 钉钉群机器人
-cxx notify --add custom   --url <url>            # 自定义 webhook
-cxx notify --add onebot11 --url http://127.0.0.1:4531/send_msg \
-  --target private:<QQ号> [--token <NapCat令牌>]    # NapCat OneBot 11 纯文本
-cxx notify --test                               # 发测试通知
-cxx notify --list                               # 查看 / --remove <序号> 删除
+cxx notify --add jingme --erp <你的ERP>  # 添加京Me机器人接收人
+cxx notify --test                        # 发送测试通知
+cxx notify --list                        # 查看接收人
 ```
 
-OneBot 11 使用 NapCat 的 **HTTP 服务器**，不是 HTTP 客户端。CXX 与 NapCat 在同一台服务器时，NapCat 监听 `127.0.0.1`，CXX 使用 `http://127.0.0.1:4531/send_msg`；分开部署时，NapCat 监听 `0.0.0.0`，CXX 使用 NapCat 所在服务器的地址，并建议配置令牌和防火墙白名单。`--target` 支持 `private:<QQ号>` 和 `group:<群号>`，消息以字符串发送并保持 CXX 原有通知内容。NapCat 是第三方 QQ 协议端，CXX 仅提供适配，不内置 NapCat。
+OneBot 11 使用 NapCat 的 **HTTP 服务器**，不是 HTTP 客户端。口袋Agent 与 NapCat 在同一台服务器时，NapCat 监听 `127.0.0.1`，口袋Agent 使用 `http://127.0.0.1:4531/send_msg`；分开部署时，NapCat 监听 `0.0.0.0`，口袋Agent 使用 NapCat 所在服务器的地址，并建议配置令牌和防火墙白名单。`--target` 支持 `private:<QQ号>` 和 `group:<群号>`，消息以字符串发送并保持 口袋Agent 原有通知内容。NapCat 是第三方 QQ 协议端，口袋Agent 仅提供适配，不内置 NapCat。
 
 > [!NOTE]
 > `cxx` 是安装器（DMG / Windows 安装包）自动装到 PATH 上的全局命令，直接指向 App 内的同一个后台二进制——`cxx pair`、`cxx status`、`cxx devices` 等子命令同样可用。从源码运行则把 `cxx` 换成 `node daemon/src/main.mjs`。
@@ -179,7 +173,6 @@ cxx terminal-enable 1|0              # 打开 / 关闭终端模式
 cxx terminal-access <deviceId> 1|0   # 授予 / 收回某台设备的终端权限
 cxx terminal-close <terminalId>      # 结束一个终端窗口
 # 其他
-cxx check-update                     # 检查新版本
 cxx version                          # 版本号
 ```
 
@@ -188,7 +181,7 @@ cxx version                          # 版本号
 需要 Node ≥ 22 与已安装的官方 `codex` CLI **≥ 0.142**（用 `codex --version` 确认）。daemon 启动时会校验
 `codex` 版本，低于下限直接拒绝启动——它依赖的实验性 `app-server` 协议自 0.142 起才验证通过。
 
-Claude Code 是可选后端：本机能找到 `claude` 且版本 ≥ 2.0.0 时，daemon 会自动注册 Claude Code agent；没安装时手机端只显示 ChatGPT。
+Claude Code 与 OpenCode 都是可选后端：本机能找到 `claude`（版本 ≥ 2.0.0）或 `opencode` 时，daemon 会自动注册对应 agent；未安装的后端不会出现在手机端。OpenCode 使用官方 `opencode serve` 的本机 HTTP/SSE API，并且只监听 `127.0.0.1`。
 
 ```bash
 # 1. 启动本地 relay
@@ -209,7 +202,7 @@ node daemon/src/main.mjs pair
 npm run smoke
 ```
 
-由于 `app-server` 上游仍是实验特性，C叉叉 内置协议漂移守护：`npm run check:schema` 导出官方 app-server
+由于 `app-server` 上游仍是实验特性，口袋Agent 内置协议漂移守护：`npm run check:schema` 导出官方 app-server
 的 JSON Schema 并与已提交的指纹（`daemon/schema/manifest.json`）比对，一有变化即失败。确认是预期变更后，
 用 `npm run check:schema:update` 刷新基线。CI 在每次 push 用钉定的最低 codex 版本跑冒烟测试；每天运行的
 `codex@latest` 任务会把 schema 漂移记为警告，并以端到端冒烟作为兼容性门槛，避免无害的上游 schema
@@ -219,13 +212,13 @@ npm run smoke
 
 官方 ChatGPT 底层的 `codex` CLI 已经有 `app-server` 和 `remote-control` 子命令，但 app-server 只绑定 `localhost`
 （官方路径是 SSH 端口转发），既没中继穿透，也没手机端。Claude Code 则没有等价的常驻 app-server。
-**C叉叉 在同一套手机端里补齐了远程接管层：ChatGPT 走 `codex app-server`，Claude Code 走本地会话 JSONL + headless CLI，终端模式走独立的 `cxx-pty-host` PTY 宿主。**
+**口袋Agent 在同一套手机端里补齐了远程接管层：ChatGPT 走 `codex app-server`，Claude Code 走本地会话 JSONL + headless CLI，终端模式走独立的 `cxx-pty-host` PTY 宿主。**
 
 ```
 你的电脑                                              手机 / 微信
 ┌────────────────────────────┐   同一 WiFi：WebRTC    ┌──────────────┐
 │ 菜单栏程序（macOS）          │◀━ 点对点直连（E2E）━━▶│  网页客户端   │
-│   ⇅ launchctl / 配置文件     │                       │(github.io/CXX)
+│   ⇅ launchctl / 配置文件     │                       │  手机网页      │
 │            ▼                │                       └──────┬───────┘
 │  daemon（Node · launchd）    │                             │ wss
 │   └─ 拉起 ─┐                │      ┌────────────────┐      │
@@ -234,12 +227,12 @@ npm run smoke
 │  Claude Code CLI / JSONL    │     └────────────────┘
 └────────────────────────────┘
                                      ┌────────────────┐
-        任务完成 / 待审批  ──webhook──▶│ Server 酱 等     │──▶ 微信推送
+        任务完成 / 待审批  ──京Me机器人──▶│ 京Me 私聊通知    │──▶ 手机提醒
                                      └────────────────┘
 ```
 
 - **daemon**——拉起官方 `codex app-server --listen`，并在检测到 `claude` CLI 时注册 Claude Code 后端；
-  出站连接 relay，处理配对、设备管理、端到端加密（X25519 + HKDF-SHA256 + AES-256-GCM）、会话实时推送、webhook 通知。零 npm 依赖。
+  出站连接 relay，处理配对、设备管理、端到端加密（X25519 + HKDF-SHA256 + AES-256-GCM）、会话实时推送、京Me机器人通知。零 npm 依赖。
 - **relay**——零知识转发器（按 `daemonId` 撮合 daemon↔client，逐帧转发密文，不持有任何密钥），
   同时给局域网直连当信令通道。可跑在 Cloudflare Worker 或单个 Node 进程。
 - **web**——手机端页面（原生 JS + WebCrypto，无构建步骤；微信内核缺 X25519 时自动降级到纯 JS 实现）。
@@ -261,25 +254,25 @@ npm run smoke
 ## ❓ 常见问答
 
 <details>
-<summary><b>C叉叉 自己包含 ChatGPT / Claude Code 吗？</b></summary>
+<summary><b>口袋Agent 自己包含 ChatGPT / Claude Code / OpenCode 吗？</b></summary>
 
-不包含。C叉叉 是一个远程接管增强工具，依赖你电脑上已经安装并登录好的 `codex` 或 `claude` CLI。
-ChatGPT 是默认后端；如果本机检测到可用的 Claude Code，手机端会自动出现 Claude Code 切换项。
+不包含。口袋Agent 是一个远程接管增强工具，依赖你电脑上已经安装并登录好的 `codex`、`claude` 或 `opencode` CLI。
+ChatGPT 是默认后端；如果本机检测到可用的 Claude Code 或 OpenCode，手机端会自动出现对应切换项。
 
 </details>
 
 <details>
-<summary><b>要改动或替换我的 ChatGPT / Claude Code 吗？</b></summary>
+<summary><b>要改动或替换我的 ChatGPT / Claude Code / OpenCode 吗？</b></summary>
 
 不需要。ChatGPT 侧对接官方、未打补丁的 `codex` CLI，在独立端口跑自己的 `app-server` 实例，不与官方 `remote-control`
-抢控制 socket。Claude Code 侧调用本机 `claude` CLI 并读取它自己的会话文件，不改 Claude Code 本体。
+抢控制 socket。Claude Code 侧调用本机 `claude` CLI 并读取它自己的会话文件；OpenCode 侧启动仅监听 `127.0.0.1` 的官方 `opencode serve`，通过 HTTP/SSE API 访问会话。两者都不修改原程序。
 
 </details>
 
 <details>
 <summary><b>终端模式会接管我在 iTerm / Terminal 里已经开着的终端吗？</b></summary>
 
-不会。终端模式只接管 C叉叉 自己创建的终端窗口，不附身你在其他终端 App 里的既有进程（技术上也不可行）。
+不会。终端模式只接管 口袋Agent 自己创建的终端窗口，不附身你在其他终端 App 里的既有进程（技术上也不可行）。
 它默认关闭，需要在电脑上打开全局开关并逐设备授权；手机发起的每个终端在电脑菜单栏都可见、可随时结束，
 只读围观链接永远无法使用终端。
 
@@ -296,17 +289,16 @@ ChatGPT 是默认后端；如果本机检测到可用的 Claude Code，手机端
 <details>
 <summary><b>为什么 Mac 会询问“允许 cxx-daemon 查找本地网络中的设备”？绿点为什么会变成 WiFi 图标？</b></summary>
 
-这是 C叉叉 在尝试把连接从中继升级为同一 WiFi 下的 WebRTC 点对点直连。绿点表示手机已经通过中继正常连接；
+这是 口袋Agent 在尝试把连接从中继升级为同一 WiFi 下的 WebRTC 点对点直连。绿点表示手机已经通过中继正常连接；
 允许本地网络权限且直连成功后，图标会变成 WiFi，数据优先在局域网内直达电脑，中继仍保留作信令和备用通道。
-拒绝权限不影响使用，只会继续走端到端加密的中继连接并显示绿点。C叉叉 不会扫描设备列表，此权限只用于连接已配对的手机。
+拒绝权限不影响使用，只会继续走端到端加密的中继连接并显示绿点。口袋Agent 不会扫描设备列表，此权限只用于连接已配对的手机。
 
 </details>
 
 <details>
 <summary><b>微信里怎么就能收到通知、还能打开界面？</b></summary>
 
-通知走 Server 酱这类 webhook——它把消息投递到微信公众号，国内也能秒收；点开深链，用微信内置浏览器打开手机端
-页面即可接管。通知只含摘要，不含敏感内容。
+通知统一由京Me机器人发送；点开深链，用手机浏览器打开口袋Agent页面即可接管。通知只含摘要，不含敏感内容。
 
 </details>
 
@@ -330,7 +322,7 @@ ChatGPT 是默认后端；如果本机检测到可用的 Claude Code，手机端
 <details>
 <summary><b>微信内置浏览器不支持某些加密，会不会连不上？</b></summary>
 
-不会。国内微信 / 安卓内核普遍不支持 WebCrypto 的 X25519，C叉叉 自带经交叉验证的纯 JS 后备实现，原生不可用时
+不会。国内微信 / 安卓内核普遍不支持 WebCrypto 的 X25519，口袋Agent 自带经交叉验证的纯 JS 后备实现，原生不可用时
 自动降级，端到端加密照常成立。
 
 </details>
@@ -355,7 +347,7 @@ daemon 主动踢断在线连接，不等下次鉴权。
 ### 🔨 构建
 
 ```bash
-npm run build:app                  # macOS：组装 dist/CXX.app（daemon + 菜单栏壳，ad-hoc 签名）
+npm run build:app                  # macOS：组装 dist/口袋Agent.app（daemon + 菜单栏壳，ad-hoc 签名）
 node scripts/build-app.mjs --dmg   # macOS：同时产出 DMG
 npm run build:sea                  # 当前平台 SEA 单文件 → dist/sea/cxx-daemon（Linux/macOS 产物名）
 npm run build:linux                # 同 build:sea（在 Linux 上构建发布用二进制）
@@ -366,7 +358,7 @@ npm run build:linux                # 同 build:sea（在 Linux 上构建发布�
 
 ### 🤝 与官方项目的关系
 
-- C叉叉 是 ChatGPT / Claude Code 的远程操作增强工具，跟 OpenAI 或 Anthropic 官方项目没有隶属关系。
+- 口袋Agent 是 ChatGPT / Claude Code / OpenCode 的远程操作增强工具，跟 OpenAI、Anthropic 或 OpenCode 官方项目没有隶属关系。
 
 
 ### 📄 许可证
