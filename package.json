@@ -1,6 +1,6 @@
 {
   "name": "cxx",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "private": true,
   "type": "module",
   "description": "Pocket Agent: remotely control your local ChatGPT / Claude Code / OpenCode from your phone. Install alongside existing CLIs — no patched agent required.",
