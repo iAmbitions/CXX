@@ -138,14 +138,42 @@ function configPermissionRules(permission) {
   return rules;
 }
 
-export function buildOpenCodeModelCatalog(providerResponse, configuredModel = null) {
+function openCodeConfiguredModelRefs(config) {
+  if (!config || typeof config !== "object") return new Set();
+  const refs = new Set();
+  const add = (value) => {
+    if (typeof value === "string" && parseOpenCodeModelRef(value)) refs.add(value.trim());
+  };
+  add(config.model);
+  add(config.small_model);
+  for (const agent of Object.values(config.agent || {})) add(agent?.model);
+  for (const [providerID, provider] of Object.entries(config.provider || {})) {
+    for (const modelID of Object.keys(provider?.models || {})) refs.add(`${providerID}/${modelID}`);
+  }
+  return refs;
+}
+
+export function buildOpenCodeModelCatalog(providerResponse, configOrModel = null) {
+  const config = configOrModel && typeof configOrModel === "object" ? configOrModel : {};
+  const configuredModel = typeof configOrModel === "string" ? configOrModel : config.model || null;
+  const configuredRefs = openCodeConfiguredModelRefs(config);
+  const hasExplicitCatalog = Object.values(config.provider || {}).some(
+    (provider) => Object.keys(provider?.models || {}).length > 0,
+  );
+  const enabled = new Set(config.enabled_providers || []);
+  const disabled = new Set(config.disabled_providers || []);
   const connected = new Set(providerResponse?.connected || []);
   const models = [];
   for (const provider of providerResponse?.all || []) {
-    if (!connected.has(provider.id)) continue;
-    for (const raw of Object.values(provider.models || {})) {
+    if (!connected.has(provider.id) || disabled.has(provider.id)) continue;
+    if (enabled.size && !enabled.has(provider.id)) continue;
+    for (const [catalogID, raw] of Object.entries(provider.models || {})) {
       if (!raw?.id || raw.status === "disabled") continue;
       const id = `${provider.id}/${raw.id}`;
+      // OpenCode 的 /provider 会把所有已连接 provider 的完整 models.dev
+      // 目录都返回。只要用户配置里声明过模型，就仅展示这些显式模型，
+      // 再补上默认/小模型/agent 引用，避免手机端一次出现上百个无关项。
+      if (hasExplicitCatalog && !configuredRefs.has(id) && !configuredRefs.has(`${provider.id}/${catalogID}`)) continue;
       models.push({
         id,
         model: id,
@@ -558,7 +586,7 @@ export class OpenCodeBackend {
       this.#api("/provider"),
       this.#api("/config").catch(() => ({})),
     ]);
-    return { data: buildOpenCodeModelCatalog(providers, config?.model || null) };
+    return { data: buildOpenCodeModelCatalog(providers, config) };
   }
 
   async answerQuestion(id, requestId, answers) {
