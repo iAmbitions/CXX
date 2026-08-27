@@ -5,6 +5,11 @@
 
 发布 `vX.Y.Z` tag 时，CI 会自动把对应版本段落作为 GitHub Release 的说明。早于 0.1.9 的版本变更未整理到本文件，可查看 [GitHub Releases](https://github.com/iAmbitions/CXX/releases) 与提交历史。
 
+## [0.1.19] - 2026-08-27
+
+### 修复
+- **手机与电脑同名会话内容不一致、桌面运行中的会话未进入“进行中”**。Codex Desktop 在首轮被中断后继续同一任务时，可能为同一个 threadId 新建带轮次后缀的 rollout 文件，而 app-server 仍返回最初的旧文件路径。口袋 Agent 现在会跨日期检查同 threadId 的候选文件并选择实际最新写入的 rollout，使手机历史、实时增量和桌面活动状态都跟随电脑当前会话。
+
 ## [0.1.18] - 2026-08-27
 
 ### 性能
