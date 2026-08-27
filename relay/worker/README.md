@@ -1,4 +1,4 @@
-# CXX Relay Worker
+# Pocket Agent Relay Worker
 
 This directory is the public, self-hostable relay Worker.
 
