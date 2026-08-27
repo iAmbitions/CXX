@@ -9293,6 +9293,10 @@ function startSession(info) {
       return;
     }
     loadAgents();     // 优先填充 agent 切换器（失败静默，仅 codex；<2 后端时隐藏）
+    // daemon 可能已在断线期间升级或重启；旧模型表不能跨重连常驻，
+    // 否则手机会继续展示升级前缓存的上百个 OpenCode 公共模型。
+    app.models = null;
+    modelsLoading = false;
     prefetchModels(); // 静默：给模型胶囊补上电脑端默认模型号
     updateHomeTab();  // 终端能力随本次 auth 的 caps 刷新（换绑电脑/开关变化）
     try {
