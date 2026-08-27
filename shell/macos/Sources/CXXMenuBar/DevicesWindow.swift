@@ -19,7 +19,7 @@ extension AppDelegate {
             section.font = .boldSystemFont(ofSize: 13)
             let hint = NSTextField(wrappingLabelWithString: L(
                 "只在这里合并展示，不会合并凭据、不撤销设备。建议把同一部手机的微信/QQ/Chrome 归到一起；不确定的设备先不要合并。",
-                "This only groups the display. Credentials stay independent and no device is revoked. Group WeChat/QQ/Chrome only when you know they are on the same phone.",
+                "This only groups the display. Credentials stay independent and no device is revoked. Group WeChat/QQ/Chrome only when you know they are on the same phone."
             ))
             hint.font = .systemFont(ofSize: 11)
             hint.textColor = .secondaryLabelColor

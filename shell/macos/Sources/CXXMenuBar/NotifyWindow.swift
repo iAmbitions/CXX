@@ -14,7 +14,7 @@ extension AppDelegate {
         title.font = .boldSystemFont(ofSize: 15)
         let hint = NSTextField(labelWithString: L(
             "填写不同 ERP 后点“添加接收人”。任务通知会发给下方全部已配置 ERP；测试仅发送给当前输入的 ERP。",
-            "Add each recipient ERP below. Task, approval, and terminal alerts go to every configured ERP; tests go only to the ERP currently entered.",
+            "Add each recipient ERP below. Task, approval, and terminal alerts go to every configured ERP; tests go only to the ERP currently entered."
         ))
         hint.textColor = .secondaryLabelColor
         hint.font = .systemFont(ofSize: 12)
