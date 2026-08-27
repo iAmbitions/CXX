@@ -1,27 +1,34 @@
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
-// The pairing (QR) window. Shows a permanent device link as a scannable QR + a
-// click-to-copy button, plus a one-time invite link for temporary sharing. Mirrors
-// codex-zh's showQR. All colors use system semantic colors so it follows light/dark.
+// Native pairing QR window. The primary flow creates a long-lived personal link:
+// reopening the same link authenticates the same device credential. A separate temporary
+// QR remains available for one-time pairing within five minutes.
 extension AppDelegate {
-    func showQR(_ url: String) {
+    func showQR(_ url: String, permanent: Bool = false) {
         qrPermURL = url
+        qrIsPermanent = permanent
+
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 16
         stack.edgeInsets = NSEdgeInsets(top: 26, left: 28, bottom: 26, right: 28)
 
-        let title = NSTextField(labelWithString: L("微信扫码 · 配对C叉叉", "Pair with WeChat"))
+        let title = NSTextField(labelWithString: permanent
+            ? L("配对一台新手机", "Pair a new phone")
+            : L("临时配对口袋Agent", "Temporarily pair Pocket Agent"))
         title.font = .boldSystemFont(ofSize: 20)
 
-        // 诚实披露：点「扫码配对」已隐式开启远程，让「远程现在是开着的」这件事对用户可见。
-        let statusLabel = NSTextField(labelWithString: L("● 远程已开启", "● Remote is on"))
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.font = .systemFont(ofSize: 13)
+        let statusLabel = NSTextField(labelWithString: permanent
+            ? L("● 长期配对 · 链接长期有效", "● Persistent pairing · link does not expire")
+            : L("● 临时连接 · 5 分钟内仅可使用一次", "● Temporary · one use within 5 minutes"))
+        statusLabel.textColor = permanent ? .systemGreen : .secondaryLabelColor
+        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
 
-        // 二维码垫一张恒定白底卡片（带留白/圆角）：CIQRCodeGenerator 出的是黑码透明底，
-        // 暗色窗口下会「黑底黑码」扫不出；白卡保证明暗两种模式下都清晰可扫。
+        // QR rests on a stable white card: CIQRCodeGenerator produces transparent
+        // pixels, so a white background keeps it scannable in both appearance modes.
         let qrSize: CGFloat = 288
         let qrPad: CGFloat = 16
         let qrCard = NSView()
@@ -40,58 +47,60 @@ extension AppDelegate {
         imgView.widthAnchor.constraint(equalToConstant: qrSize).isActive = true
         imgView.heightAnchor.constraint(equalToConstant: qrSize).isActive = true
 
-        let note = NSTextField(labelWithString: L("扫码链接长期有效，请勿轻易转发", "This link stays valid — don’t forward it casually"))
-        note.textColor = .secondaryLabelColor
+        let note = NSTextField(labelWithString: permanent
+            ? L("此链接包含长期设备凭据，只供本人使用。重复打开同一链接不会新增设备；如有泄露，请在“已配对设备”中撤销。", "This link contains a persistent device credential for personal use. Reopening the same link does not add another device; revoke it in Devices if exposed.")
+            : L("该二维码仅可使用一次，5 分钟后失效。手机完成连接后会保存自己的长期凭据。", "This QR can be used once and expires in 5 minutes. After connecting, the phone saves its own persistent credential."))
+        note.textColor = permanent ? .systemOrange : .secondaryLabelColor
         note.alignment = .center
         note.font = .systemFont(ofSize: 13)
-        note.maximumNumberOfLines = 2
+        note.maximumNumberOfLines = 3
         note.translatesAutoresizingMaskIntoConstraints = false
         note.widthAnchor.constraint(equalToConstant: 340).isActive = true
 
-        // 永久链接：整块可点、点击即复制完整 url（展示时中部截断）。
-        let copyBtn = NSButton(title: middleTruncate(linkForDisplay(url), 46), target: self, action: #selector(copyPermLink(_:)))
+        let copyTitle = permanent ? L("复制长期配对链接", "Copy persistent pairing link") : L("复制临时配对链接", "Copy temporary pairing link")
+        let copyBtn = NSButton(title: copyTitle, target: self, action: #selector(copyPairLink(_:)))
         copyBtn.bezelStyle = .rounded
-        copyBtn.font = .systemFont(ofSize: 15, weight: .medium)
-        copyBtn.toolTip = L("点击复制永久链接", "Click to copy the permanent link")
+        copyBtn.font = .systemFont(ofSize: 14, weight: .medium)
+        copyBtn.toolTip = permanent
+            ? L("链接含长期设备凭据，只供本人使用，请勿分享", "The link contains a persistent device credential; keep it private")
+            : L("复制后在 5 分钟内打开并完成一次配对", "Open and finish pairing within 5 minutes")
         copyBtn.translatesAutoresizingMaskIntoConstraints = false
-        copyBtn.widthAnchor.constraint(equalToConstant: 340).isActive = true
+        copyBtn.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
-        let hint = NSTextField(labelWithString: L("↑ 点击链接即可复制到剪贴板", "↑ Click the link to copy it"))
-        hint.textColor = .tertiaryLabelColor
-        hint.font = .systemFont(ofSize: 12)
+        let alternateTitle = permanent ? L("改用临时二维码", "Use a temporary QR") : L("生成长期二维码", "Generate a persistent QR")
+        let alternateBtn = NSButton(title: alternateTitle, target: self, action: #selector(switchPairingMode(_:)))
+        alternateBtn.bezelStyle = .rounded
+        alternateBtn.font = .systemFont(ofSize: 13)
 
-        // 一次性链接：临时发出去用，5 分钟内有效、仅一次。
-        let onceBtn = NSButton(title: Self.onceLinkTitle, target: self, action: #selector(copyOnceLink(_:)))
-        onceBtn.bezelStyle = .rounded
-        onceBtn.font = .systemFont(ofSize: 13)
+        let row = NSStackView(views: [copyBtn, alternateBtn])
+        row.spacing = 10
 
         stack.addArrangedSubview(title)
         stack.addArrangedSubview(statusLabel)
         stack.setCustomSpacing(10, after: title)
         stack.addArrangedSubview(qrCard)
         stack.addArrangedSubview(note)
-        stack.addArrangedSubview(copyBtn)
-        stack.addArrangedSubview(hint)
-        stack.setCustomSpacing(22, after: hint)
-        stack.addArrangedSubview(onceBtn)
-        makeWindow(L("微信扫码 · 配对C叉叉", "Pair a device"), stack, width: 400, height: 560)
+        stack.addArrangedSubview(row)
+        let window = makeWindow(L("扫码配对口袋Agent", "Pair Pocket Agent"), stack, width: 400, height: 520)
+        window.identifier = Self.pairWindowID
     }
 
-    // One-time-invite button title (also the flash-restore target, so keep it a single source).
-    static var onceLinkTitle: String { L("复制邀请链接（一次性 · 5 分钟）", "Copy one-time invite (5 min)") }
-
-    @objc func copyPermLink(_ sender: NSButton) {
+    @objc func copyPairLink(_ sender: NSButton) {
         copyToPasteboard(qrPermURL)
-        flashCopied(sender, restore: middleTruncate(linkForDisplay(qrPermURL), 46))
+        flashCopied(sender, restore: qrIsPermanent
+            ? L("复制长期配对链接", "Copy persistent pairing link")
+            : L("复制临时配对链接", "Copy temporary pairing link"))
     }
 
-    @objc func copyOnceLink(_ sender: NSButton) {
-        let res = backend(["pair-once"])
+    @objc func switchPairingMode(_ sender: NSButton) {
+        let permanent = !qrIsPermanent
+        let command = permanent ? "pair-permanent" : "pair"
+        let res = backend([command])
         guard let url = res["url"] as? String else {
             alert(L("生成失败", "Failed"), "\(res["error"] ?? L("未知错误", "Unknown error"))"); return
         }
-        copyToPasteboard(url)
-        flashCopied(sender, restore: Self.onceLinkTitle)
+        closePairWindows()
+        showQR(url, permanent: permanent)
     }
 
     // 复制后短暂把按钮标题变为「已复制 ✓」再复原。
@@ -102,5 +111,10 @@ extension AppDelegate {
             button.title = restore
             button.isEnabled = true
         }
+    }
+
+    static let pairWindowID = NSUserInterfaceItemIdentifier("cxx.pair")
+    func closePairWindows() {
+        for w in windows where w.identifier == Self.pairWindowID { w.close() }
     }
 }

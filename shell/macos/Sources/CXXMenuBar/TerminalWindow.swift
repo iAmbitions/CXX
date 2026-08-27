@@ -24,8 +24,8 @@ extension AppDelegate {
 
         if !hostAvailable {
             let warn = NSTextField(wrappingLabelWithString: L(
-                "未找到终端组件（cxx-pty-host）。请重新安装 CXX 或更新到包含终端模式的版本。",
-                "Terminal component (cxx-pty-host) not found. Reinstall CXX or update to a build that includes Terminal Mode."))
+                "未找到终端组件（cxx-pty-host）。请重新安装口袋Agent或更新到包含终端模式的版本。",
+                "Terminal component (cxx-pty-host) not found. Reinstall Pocket Agent or update to a build that includes Terminal Mode."))
             warn.textColor = .secondaryLabelColor
             stack.addArrangedSubview(warn)
         }

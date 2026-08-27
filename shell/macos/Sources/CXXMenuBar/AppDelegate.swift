@@ -1,20 +1,22 @@
 import AppKit
 import ServiceManagement
 
-// The menu-bar controller (Model A). A pure view over the cxx-daemon LaunchAgent: it
+// The menu-bar controller (Model A). A pure view over the background-service LaunchAgent: it
 // polls `backend(["status"])` on each menu open and rebuilds a three-state menu, and
 // turns clicks into one-shot backend subcommands. It never spawns or owns the daemon —
 // the daemon runs under launchd, so quitting the tray leaves remote running.
 // Window builders live in extensions (PairingWindow / DevicesWindow / NotifyWindow).
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private static let supportIssuesURL = URL(string: "https://github.com/iAmbitions/CXX/issues")!
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
     // Open windows are retained here (menu-bar apps have no window controller stack).
     var windows: [NSWindow] = []
-    var qrPermURL = ""                 // permanent link shown in the current QR window (click-to-copy)
-    var notifyPopup: NSPopUpButton?    // notify window controls (set while that window is open)
+    var qrPermURL = ""                 // pairing link currently shown in the QR window
+    var qrIsPermanent = false           // persistent #d= device credential vs one-time #p= token
     var notifyField: NSTextField?
+    var deviceGroupPrimaryPopup: NSPopUpButton?
+    var deviceGroupMemberPopup: NSPopUpButton?
+    var deviceGroupNameField: NSTextField?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
@@ -22,8 +24,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
         refreshIcon(status())
-        showFirstLaunchHintIfNeeded()
         showDiskImageInstallHintIfNeeded()
+        if !isRunningFromDiskImage {
+            showControlCenter()
+            // Upgrade legacy LaunchAgent registrations whose executable was named after
+            // the old repository. This runs once after an upgrade and makes macOS display
+            // “口袋Agent” in Background Items without restarting on every app launch.
+            DispatchQueue.global(qos: .utility).async {
+                guard refreshBundledDaemonRegistrationIfNeeded() else { return }
+                let fresh = self.status()
+                DispatchQueue.main.async { self.refreshIcon(fresh) }
+            }
+        }
     }
 
     // 从 DMG 挂载盘直接运行会让 LaunchAgent 写入 /Volumes/... 路径；一旦弹出 DMG
@@ -38,10 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = L("请先安装到“应用程序”", "Install CXX in Applications first")
+            alert.messageText = L("请先安装到“应用程序”", "Install Pocket Agent in Applications first")
             alert.informativeText = L(
-                "你正在从安装镜像（DMG）直接运行 C叉叉。请关闭本应用，把 DMG 里的 CXX.app 拖到“应用程序”文件夹，再从“应用程序”打开；否则弹出 DMG 或重启后，手机端会显示电脑离线。",
-                "CXX is running directly from the installer disk image. Quit it, drag CXX.app to Applications, then open it from Applications. Otherwise the phone will show the computer offline after the DMG is ejected or after a restart.",
+                "你正在从安装镜像（DMG）直接运行口袋Agent。请关闭本应用，把 DMG 里的口袋Agent.app 拖到“应用程序”文件夹，再从“应用程序”打开；否则弹出 DMG 或重启后，手机端会显示电脑离线。",
+                "Pocket Agent is running directly from the installer disk image. Quit it, drag Pocket Agent.app to Applications, then open it from Applications. Otherwise the phone will show the computer offline after the DMG is ejected or after a restart.",
             )
             alert.addButton(withTitle: L("打开“应用程序”", "Open Applications"))
             alert.addButton(withTitle: L("知道了", "Got it"))
@@ -57,23 +69,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
-    // CXX 是菜单栏应用（不显示 Dock 图标或主窗口）。首次启动给出明确反馈，
-    // 避免用户从 Launchpad 点击后误以为应用卡死或没有打开。
-    private func showFirstLaunchHintIfNeeded() {
-        let key = "CXXDidShowMenuBarLaunchHint"
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
-        UserDefaults.standard.set(true, forKey: key)
-        DispatchQueue.main.async {
-            NSApp.activate(ignoringOtherApps: true)
-            let alert = NSAlert()
-            alert.messageText = L("C叉叉已启动", "CXX is running")
-            alert.informativeText = L(
-                "C叉叉运行在屏幕顶部右侧的菜单栏，不会打开普通窗口，也不会显示在 Dock。请点击顶部菜单栏里的绿色 CXX 图标，然后选择“开启远程 / 配对”。",
-                "CXX runs in the menu bar at the top-right of the screen. It does not open a normal window or appear in the Dock. Click the green CXX icon in the menu bar, then choose Enable Remote / Pair.",
-            )
-            alert.addButton(withTitle: L("知道了", "Got it"))
-            alert.runModal()
-        }
+    // 口袋Agent既保留菜单栏快捷入口，也作为普通 Mac 应用显示 Dock 图标和控制中心。
+    // Finder/Launchpad/Dock 再次点击时，始终把控制中心带到前台。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showControlCenter()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false // 关闭控制中心不影响远程 daemon 或菜单栏快捷入口。
     }
 
     private func installMainMenu() {
@@ -131,9 +135,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.imageScaling = .scaleProportionallyDown
             button.title = ""
             button.toolTip = !enabled
-                ? L("C叉叉远程未开启", "CXX Remote off")
-                : (running ? L("C叉叉远程运行中", "CXX Remote on")
-                           : L("C叉叉已启用但未运行", "CXX enabled, not running"))
+                ? L("口袋Agent远程未开启", "Pocket Agent Remote off")
+                : (running ? L("口袋Agent远程运行中", "Pocket Agent Remote on")
+                           : L("口袋Agent已启用但未运行", "Pocket Agent enabled, not running"))
             button.appearsDisabled = false
             return
         }
@@ -150,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         var img: NSImage?
         for name in candidates {
-            if let i = NSImage(systemSymbolName: name, accessibilityDescription: L("CXX 远程", "CXX Remote")) { img = i; break }
+            if let i = NSImage(systemSymbolName: name, accessibilityDescription: L("口袋Agent远程", "Pocket Agent Remote")) { img = i; break }
         }
         if let img = img {
             img.isTemplate = true
@@ -184,6 +188,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(disabled(L("已配对设备：\(devices)", "Devices: \(devices)")))
         }
         menu.addItem(.separator())
+        add(menu, L("打开控制中心", "Open Pocket Agent"), #selector(doOpenControlCenter))
+        menu.addItem(.separator())
 
         // 「扫码配对」两态都在：未开启时点它即隐式开启远程（见 doPair），配对与启用合并为一步。
         if enabled {
@@ -205,15 +211,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        // 开机自启：standalone CXX 无启动器按需拉起托盘，重启后须靠登录项让菜单图标重现。
+        // 独立版 Pocket Agent 无启动器按需拉起托盘，重启后须靠登录项让菜单图标重现。
         let launch = NSMenuItem(title: L("开机自启", "Launch at login"), action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launch.target = self
         launch.state = Self.launchAtLoginEnabled ? .on : .off
         menu.addItem(launch)
 
         menu.addItem(.separator())
-        add(menu, L("检查更新…", "Check for updates…"), #selector(doCheckUpdate))
-        add(menu, L("反馈问题", "Report an issue"), #selector(doReportIssue))
         add(menu, enabled ? L("退出托盘（远程继续运行）", "Quit tray (remote keeps running)") : L("退出托盘", "Quit tray"), #selector(doQuit))
     }
 
@@ -240,12 +244,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let err = en["error"] { alert(L("开启失败", "Enable failed"), "\(err)"); return } // daemon 起不来就别出码
             refreshIcon(status())
         }
-        let res = backend(["pair"])
+        // “扫码配对手机”是给自己常用手机的主入口：生成可长期重复打开的设备链接。
+        // 同一链接始终对应同一个设备凭据；临时 5 分钟码仍可在二维码窗口中切换生成。
+        let res = backend(["pair-permanent"])
         guard let url = res["url"] as? String else {
             alert(L("配对失败", "Pair failed"), "\(res["error"] ?? L("未知错误", "Unknown error"))"); return
         }
-        showQR(url)
+        showQR(url, permanent: true)
     }
+
+    @objc func doOpenControlCenter() { showControlCenter() }
 
     @objc func doDevices() {
         let devices = backend(["devices"])["devices"] as? [[String: Any]] ?? []
@@ -293,53 +301,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func doQuit() { NSApp.terminate(nil) }
 
-    @objc func doReportIssue() {
-        NSWorkspace.shared.open(Self.supportIssuesURL)
-    }
-
-    // 检查更新：daemon 的 check-update 查 GitHub 最新 release（网络最长 8 秒），
-    // 放后台队列避免卡菜单栏；结论回主线程弹窗，有更新就引导去下载页。
-    @objc func doCheckUpdate() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let res = backend(["check-update"])
-            DispatchQueue.main.async { self.presentUpdateResult(res) }
-        }
-    }
-
-    private func presentUpdateResult(_ res: [String: Any]) {
-        let pageURL = (res["url"] as? String).flatMap { URL(string: $0) }
-            ?? URL(string: "https://github.com/iAmbitions/CXX/releases/latest")!
-        let current = res["current"] as? String ?? "?"
-        // 成功响应必带 latest；两者皆无 = daemon 没吐 JSON（版本过旧不认识
-        // check-update、或启动即崩，backend() 都返回空字典）——不能当"已是最新"。
-        var err = res["error"].map { "\($0)" }
-        if err == nil, res["latest"] as? String == nil {
-            err = L("后台服务没有返回检查结果（可能版本过旧或未能启动）。",
-                    "The background service returned no result (it may be outdated or failed to start).")
-        }
-        if let err = err {
-            if confirm(L("检查更新失败", "Update check failed"),
-                       L("\(err)\n\n可以手动打开发布页看看是否有新版本。", "\(err)\n\nYou can open the releases page to check manually."),
-                       ok: L("打开发布页", "Open releases page")) {
-                NSWorkspace.shared.open(pageURL)
-            }
-            return
-        }
-        let latest = res["latest"] as? String ?? "?"
-        if res["update"] as? Bool ?? false {
-            // DMG 覆盖安装不会自动重启 LaunchAgent（页面上的 install.sh 会），
-            // 不提示的话后台 daemon 会继续跑旧版本，用户以为更新完了。
-            if confirm(L("发现新版本", "Update available"),
-                       L("最新版本 v\(latest)，当前 v\(current)。\n\n下载 DMG 覆盖安装后，请重新打开托盘，并在菜单点「停用远程」→「扫码配对」，让后台服务切换到新版本（用页面上的 install.sh 安装则全自动）。",
-                         "Latest is v\(latest); you have v\(current).\n\nAfter installing the DMG, reopen the tray, then use “Disable remote” → “Pair a device” so the background service switches to the new version (the install.sh script on the page does all this automatically)."),
-                       ok: L("前往下载", "Download")) {
-                NSWorkspace.shared.open(pageURL)
-            }
-        } else {
-            alert(L("已是最新版本", "Up to date"), L("当前 v\(current) 就是最新版本。", "v\(current) is the latest version."))
-        }
-    }
-
     // 双按钮确认弹窗：返回是否点了主按钮。
     private func confirm(_ title: String, _ message: String, ok: String) -> Bool {
         let a = NSAlert()
@@ -360,7 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @discardableResult
     func makeWindow(_ title: String, _ content: NSView, width: CGFloat, height: CGFloat) -> NSWindow {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                         styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         w.title = title
         w.contentView = content
         w.center()

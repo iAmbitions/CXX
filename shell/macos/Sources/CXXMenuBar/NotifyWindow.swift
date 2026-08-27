@@ -1,37 +1,44 @@
 import AppKit
 
-// The notification-channels window. Add/remove webhook channels (Bark / Server酱 /
-// WeCom / DingTalk / custom) and send a test push. Channel edits are written to the
-// config; the running daemon hot-reloads them (see main.mjs onConfig). Mirrors
-// codex-zh's showNotify.
+// 京Me机器人通知设置。产品已收敛为唯一渠道：输入接收人的 ERP 即可；机器人凭据
+// 只保存在本机 daemon.json，界面和仓库均不展示、不保存这些敏感值。
 extension AppDelegate {
     func showNotify() {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
 
-        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
-        // Order must stay aligned with the `types` array in notifyAddTapped (index → type).
-        popup.addItems(withTitles: ["Bark", L("Server酱", "ServerChan"), L("企业微信", "WeCom"), L("钉钉", "DingTalk"), L("自定义", "Custom")])
+        let title = NSTextField(labelWithString: L("京Me机器人通知", "JingMe robot notifications"))
+        title.font = .boldSystemFont(ofSize: 15)
+        let hint = NSTextField(labelWithString: L(
+            "填写不同 ERP 后点“添加接收人”。任务通知会发给下方全部已配置 ERP；测试仅发送给当前输入的 ERP。",
+            "Add each recipient ERP below. Task, approval, and terminal alerts go to every configured ERP; tests go only to the ERP currently entered.",
+        ))
+        hint.textColor = .secondaryLabelColor
+        hint.font = .systemFont(ofSize: 12)
+        hint.maximumNumberOfLines = 2
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        hint.widthAnchor.constraint(equalToConstant: 360).isActive = true
+
         let field = NSTextField()
-        field.placeholderString = L("Bark/Server酱 填 Key；其余填 Webhook URL", "Bark/ServerChan: key; others: webhook URL")
+        field.placeholderString = L("接收通知的 ERP，例如 tanchuxiong.1", "Recipient ERP, e.g. tanchuxiong.1")
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.widthAnchor.constraint(equalToConstant: 340).isActive = true
-        notifyPopup = popup
+        field.widthAnchor.constraint(equalToConstant: 360).isActive = true
         notifyField = field
 
-        let addBtn = NSButton(title: L("添加", "Add"), target: self, action: #selector(notifyAddTapped))
-        let testBtn = NSButton(title: L("发送测试", "Test"), target: self, action: #selector(notifyTestTapped))
+        let addBtn = NSButton(title: L("添加接收人", "Add recipient"), target: self, action: #selector(notifyAddTapped))
+        let testBtn = NSButton(title: L("测试当前 ERP", "Test current ERP"), target: self, action: #selector(notifyTestTapped))
         let btnRow = NSStackView(views: [addBtn, testBtn])
         btnRow.spacing = 10
 
-        stack.addArrangedSubview(NSTextField(labelWithString: L("添加通知渠道", "Add a channel")))
-        stack.addArrangedSubview(popup)
+        stack.addArrangedSubview(title)
+        stack.addArrangedSubview(hint)
         stack.addArrangedSubview(field)
         stack.addArrangedSubview(btnRow)
-        stack.addArrangedSubview(NSTextField(labelWithString: L("已配置", "Configured:")))
+        stack.addArrangedSubview(NSTextField(labelWithString: L("已配置接收人", "Configured recipients:")))
+
         let list = backend(["notify-list"])["notifiers"] as? [[String: Any]] ?? []
         for n in list {
             let label = n["label"] as? String ?? ""
@@ -40,8 +47,7 @@ extension AppDelegate {
             row.spacing = 10
             let l = NSTextField(labelWithString: label)
             l.translatesAutoresizingMaskIntoConstraints = false
-            l.widthAnchor.constraint(equalToConstant: 160).isActive = true
-            // Per-channel test button (left of Remove) — pushes a test through THIS saved channel.
+            l.widthAnchor.constraint(equalToConstant: 170).isActive = true
             let test = NSButton(title: L("测试", "Test"), target: self, action: #selector(notifyTestRowTapped(_:)))
             test.identifier = NSUserInterfaceItemIdentifier(String(idx))
             let rm = NSButton(title: L("删除", "Remove"), target: self, action: #selector(notifyRemoveTapped(_:)))
@@ -51,55 +57,48 @@ extension AppDelegate {
             row.addArrangedSubview(rm)
             stack.addArrangedSubview(row)
         }
-        let w = makeWindow(L("通知设置", "Notifications"), stack, width: 400, height: max(240, CGFloat(220 + list.count * 34)))
+
+        let w = makeWindow(L("京Me通知", "JingMe notifications"), stack, width: 410, height: max(230, CGFloat(205 + list.count * 34)))
         w.identifier = Self.notifyWindowID
     }
 
-    // Build a notifier payload from the current popup + field selection, or nil if the
-    // field is empty. Shared by Add and Test so both read the same type→field mapping.
     private func currentNotifyPayload() -> [String: Any]? {
-        guard let popup = notifyPopup, let field = notifyField else { return nil }
-        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
-        if value.isEmpty { return nil }
-        let types = ["bark", "serverchan", "wecom", "dingtalk", "custom"]
-        let type = types[popup.indexOfSelectedItem]
-        var payload: [String: Any] = ["type": type]
-        if type == "bark" || type == "serverchan" { payload["key"] = value } else { payload["url"] = value }
-        return payload
+        guard let field = notifyField else { return nil }
+        let erp = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return erp.isEmpty ? nil : ["type": "jingme", "erp": erp]
     }
 
     @objc func notifyAddTapped() {
         guard let payload = currentNotifyPayload() else {
-            alert(L("请填写", "Missing"), L("请填入 Key 或 Webhook URL", "Enter a key or webhook URL")); return
+            alert(L("请填写 ERP", "ERP required"), L("请填入接收通知的 ERP。", "Enter the recipient ERP.")); return
         }
-        backendWithInput("notify-add", payload)
+        let result = backendWithInput("notify-add", payload)
+        guard result["ok"] as? Bool == true else {
+            alert(L("添加失败", "Could not add"), "\(result["error"] ?? L("请检查 ERP 和本机机器人配置。", "Check the ERP and local robot configuration."))"); return
+        }
         closeNotifyWindows()
         showNotify()
     }
 
-    // The top "发送测试" button tests ONLY the key/URL currently in the input box — a
-    // pre-add dry run. To test a saved channel, use the per-row 测试 button instead.
+    // 顶部测试只发给输入框里的 ERP，不落盘。
     @objc func notifyTestTapped() {
         guard let payload = currentNotifyPayload() else {
-            alert(L("请填写", "Missing"), L("请先填入 Key 或 Webhook URL 再测试。", "Enter a key or webhook URL first.")); return
+            alert(L("请填写 ERP", "ERP required"), L("请先填入 ERP 再发送测试。", "Enter an ERP before sending a test.")); return
         }
-        let count = backendWithInput("notify-test", payload)["count"] as? Int ?? 0
-        if count == 0 {
-            alert(L("未发送", "Not sent"), L("未能发送，请检查所选类型与填写的 Key/URL。", "Nothing sent — check the type and key/URL."))
-            return
+        let result = backendWithInput("notify-test", payload)
+        guard result["ok"] as? Bool == true else {
+            alert(L("未发送", "Not sent"), "\(result["error"] ?? L("京Me机器人发送失败，请检查本机网络和机器人配置。", "JingMe delivery failed; check the local network and robot configuration."))"); return
         }
-        alert(L("已发送", "Sent"), L("已向当前填写的渠道发送测试通知，请检查手机。", "Sent a test to the entered channel — check your phone."))
+        alert(L("已发送", "Sent"), L("已向该 ERP 发送京Me测试通知，请检查京Me。", "A JingMe test was sent to this ERP."))
     }
 
-    // Per-row test: push a test through the already-saved channel at this index.
     @objc func notifyTestRowTapped(_ sender: NSButton) {
         guard let idx = sender.identifier?.rawValue else { return }
-        let count = backend(["notify-test-index", idx])["count"] as? Int ?? 0
-        if count == 0 {
-            alert(L("未发送", "Not sent"), L("发送失败，请检查该渠道配置。", "Send failed — check this channel."))
-            return
+        let result = backend(["notify-test-index", idx])
+        guard result["ok"] as? Bool == true else {
+            alert(L("未发送", "Not sent"), "\(result["error"] ?? L("京Me机器人发送失败，请检查本机网络和机器人配置。", "JingMe delivery failed; check the local network and robot configuration."))"); return
         }
-        alert(L("已发送", "Sent"), L("已向该渠道发送测试通知，请检查手机。", "Sent a test to this channel — check your phone."))
+        alert(L("已发送", "Sent"), L("已发送京Me测试通知，请检查京Me。", "A JingMe test was sent."))
     }
 
     @objc func notifyRemoveTapped(_ sender: NSButton) {
@@ -109,7 +108,6 @@ extension AppDelegate {
         showNotify()
     }
 
-    // Match the notify window by a stable identifier (not localized title).
     static let notifyWindowID = NSUserInterfaceItemIdentifier("cxx.notify")
     func closeNotifyWindows() {
         for w in windows where w.identifier == Self.notifyWindowID { w.close() }

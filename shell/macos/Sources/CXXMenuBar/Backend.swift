@@ -11,15 +11,15 @@ let cxxIsChineseUI: Bool = (Locale.preferredLanguages.first ?? "en").hasPrefix("
 func L(_ zh: String, _ en: String) -> String { cxxIsChineseUI ? zh : en }
 
 // Per-action backend bridge (Model A). The menu-bar app is a pure view: it shells
-// out to `cxx-daemon <subcommand>` for every action (argv subcommand in → single
+// out to the bundled background service for every action (argv subcommand in → single
 // JSON object out) and holds no persistent connection. The daemon itself runs as an
 // independent LaunchAgent, so quitting the tray does not stop it. Mirrors codex-zh's
 // CodexZhRemoteMenu.swift `backend()`.
 
-// Locate the cxx-daemon binary (SEA). Resolution order, cached after first success:
+// Locate the background-service binary (SEA). Resolution order, cached after first success:
 //   1. CXX_DAEMON_BIN env override (dev / testing)
-//   2. bundled inside the .app (Contents/Resources/cxx-daemon)
-//   3. dev fallback: repo dist/sea/cxx-daemon relative to the built executable
+//   2. branded binary bundled inside the .app (Contents/Resources/口袋Agent)
+//   3. legacy bundle/dev fallbacks for locally built older packages
 private var cachedDaemonBinary: URL?
 func daemonBinaryURL() -> URL? {
     if let cached = cachedDaemonBinary { return cached }
@@ -29,10 +29,12 @@ func daemonBinaryURL() -> URL? {
         let url = URL(fileURLWithPath: env)
         if fm.isExecutableFile(atPath: url.path) { cachedDaemonBinary = url; return url }
     }
-    if let res = Bundle.main.resourceURL?.appendingPathComponent("cxx-daemon"),
-       fm.isExecutableFile(atPath: res.path) {
-        cachedDaemonBinary = res
-        return res
+    for name in ["口袋Agent", "cxx-daemon"] {
+        if let res = Bundle.main.resourceURL?.appendingPathComponent(name),
+           fm.isExecutableFile(atPath: res.path) {
+            cachedDaemonBinary = res
+            return res
+        }
     }
     let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     let devGuess = exe
@@ -46,14 +48,38 @@ func daemonBinaryURL() -> URL? {
     return nil
 }
 
-// Run `cxx-daemon <args...>` and parse its single-line JSON stdout. stderr is
+// Existing installations may have a LaunchAgent plist that still points at the historical
+// bundled filename. Re-register only when that path differs; normal app launches must not
+// restart a healthy daemon and interrupt active phone sessions.
+@discardableResult
+func refreshBundledDaemonRegistrationIfNeeded() -> Bool {
+    guard let expected = daemonBinaryURL(),
+          let resources = Bundle.main.resourceURL,
+          expected.deletingLastPathComponent().standardizedFileURL == resources.standardizedFileURL else {
+        return false
+    }
+    let plist = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/LaunchAgents/ai.wokey.cxx.remote.plist")
+    guard let data = try? Data(contentsOf: plist),
+          let root = try? PropertyListSerialization.propertyList(from: data, format: nil),
+          let dict = root as? [String: Any],
+          let args = dict["ProgramArguments"] as? [String],
+          let registered = args.first,
+          URL(fileURLWithPath: registered).standardizedFileURL != expected.standardizedFileURL else {
+        return false
+    }
+    let result = backend(["enable"])
+    return result["error"] == nil
+}
+
+// Run the background service with `<args...>` and parse its single-line JSON stdout. stderr is
 // discarded (daemon CLI keeps stdout pure JSON, logs to stderr). Blocking — every
 // call is a short-lived process, so keep them off the main run loop where practical.
 @discardableResult
 func backend(_ args: [String]) -> [String: Any] {
     guard let binary = daemonBinaryURL() else {
-        return ["error": L("找不到 cxx-daemon 可执行文件（设置 CXX_DAEMON_BIN 或放入 App 资源目录）",
-                            "cxx-daemon executable not found (set CXX_DAEMON_BIN or place it in the app’s Resources)")]
+        return ["error": L("找不到口袋Agent后台服务，请重新安装应用。",
+                            "Pocket Agent background service was not found. Please reinstall the app.")]
     }
     let process = Process()
     process.executableURL = binary
