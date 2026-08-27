@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CXX Remote relay —— Node 自托管/本地开发变体
+// Pocket Agent Remote relay —— Node 自托管/本地开发变体
 // 与 Cloudflare Worker 版实现相同的转发协议（见 public/PROTOCOL.md §1）。
 // 用法：node remote/relay-node/server.mjs [--port 8787] [--host 127.0.0.1]
 import { createServer } from "node:http";
@@ -34,7 +34,7 @@ export function createRelayServer({ log = () => {} } = {}) {
 
   const server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    res.end("cxx relay ok\n");
+    res.end("Pocket Agent relay ok\n");
   });
 
   server.on("upgrade", (req, socket) => {
