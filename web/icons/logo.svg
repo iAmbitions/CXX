@@ -1,9 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
-  <title id="title">C叉叉 logo</title>
-  <desc id="desc">微信绿背景，白色 C叉叉 和下划线。</desc>
-  <rect width="512" height="512" fill="#07C160"/>
-  <path d="M215 174c-21-21-57-28-90-13-43 20-62 71-42 114 20 43 71 62 114 42 12-6 23-14 32-24" transform="translate(-4 0)" fill="none" stroke="#FFFFFF" stroke-width="42" stroke-linecap="round"/>
-  <text x="319" y="266" text-anchor="middle" dominant-baseline="middle" font-family="PingFang SC, Noto Sans CJK SC, Microsoft YaHei, sans-serif" font-size="108" font-weight="900" fill="#FFFFFF">叉叉</text>
-  <path d="M323 349H394" stroke="#FFFFFF" stroke-width="21" stroke-linecap="round"/>
+  <title id="title">口袋Agent logo</title>
+  <desc id="desc">深色背景上的口袋Agent字母 P 与智能星芒标记。</desc>
+  <defs>
+    <linearGradient id="pocketGradient" x1="142" y1="116" x2="392" y2="400" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8FFD4"/>
+      <stop offset="0.48" stop-color="#42E88B"/>
+      <stop offset="1" stop-color="#08B965"/>
+    </linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#101822"/>
+  <circle cx="258" cy="258" r="176" fill="#1DE481" opacity="0.08"/>
+  <path d="M168 390V122H272C344 122 390 167 390 233S344 344 272 344H168" fill="none" stroke="url(#pocketGradient)" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M364 93L375 125L407 136L375 147L364 179L353 147L321 136L353 125Z" fill="#FFFFFF" filter="url(#glow)"/>
 </svg>
