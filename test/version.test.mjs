@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkUpdate, shapeUpdateResult } from "../daemon/src/menu-backend.mjs";
 import { checkMinVersion, compareVersions, cxxVersion, parseVersionTriple } from "../daemon/src/version.mjs";
 
 test("cxxVersion dev 模式读取仓库 package.json", () => {
@@ -36,42 +35,4 @@ test("checkMinVersion 只有明确低于下限才拦,读不到/解析不出放�
   // 版本串格式变化/读不到:绝不能把新版 CLI 拦在启动之外
   assert.equal(checkMinVersion("future-format", "2.0.0").ok, true);
   assert.equal(checkMinVersion(null, "2.0.0").ok, true);
-});
-
-test("shapeUpdateResult 得出是否有更新与下载页", () => {
-  const up = shapeUpdateResult("0.1.3", { tag_name: "v0.2.0", html_url: "https://x/rel" });
-  assert.deepEqual(up, { ok: true, current: "0.1.3", latest: "0.2.0", update: true, url: "https://x/rel" });
-
-  const same = shapeUpdateResult("0.1.3", { tag_name: "v0.1.3" });
-  assert.equal(same.update, false);
-  assert.match(same.url, /releases/); // html_url 缺失时兜底到发布页
-
-  const bad = shapeUpdateResult("0.1.3", {});
-  assert.ok(bad.error);
-  assert.equal(bad.current, "0.1.3");
-});
-
-test("checkUpdate 网络失败返回 error + 发布页兜底", async () => {
-  const res = await checkUpdate({}, {
-    fetchImpl: () => Promise.reject(new Error("offline")),
-  });
-  assert.equal(res.error, "offline");
-  assert.match(res.url, /github\.com\/iAmbitions\/CXX\/releases/);
-});
-
-test("checkUpdate 正常响应走 shapeUpdateResult", async () => {
-  const res = await checkUpdate({}, {
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({ tag_name: "v99.0.0", html_url: "https://x/99" }),
-    }),
-  });
-  assert.equal(res.update, true);
-  assert.equal(res.latest, "99.0.0");
-  assert.equal(res.url, "https://x/99");
-});
-
-test("checkUpdate 非 2xx 返回 HTTP 错误", async () => {
-  const res = await checkUpdate({}, { fetchImpl: async () => ({ ok: false, status: 403 }) });
-  assert.match(res.error, /403/);
 });

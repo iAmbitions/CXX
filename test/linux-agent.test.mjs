@@ -104,7 +104,7 @@ test("buildUnitFile writes Restart, PATH, and log append", () => {
   assert.match(body, /StandardOutput=append:\/home\/u\/\.cxx\/remote\/daemon\.log/);
   assert.match(body, /StandardError=append:\/home\/u\/\.cxx\/remote\/daemon\.log/);
   assert.match(body, /WantedBy=default\.target/);
-  assert.match(body, /Description=CXX remote daemon/);
+  assert.match(body, /Description=Pocket Agent remote daemon/);
 });
 
 test("systemdPath prefers user local bins", () => {

@@ -379,7 +379,7 @@ test("restore：扫描注册目录恢复 DETACHED 会话，代次翻新，owner 
           hostPid: 1,
           childPid: 7,
           startedAt: 123,
-          meta: { title: "Claude Code · CXX", presetId: "claude", presetName: "Claude Code", cwd: "/tmp", createdAt: 123, silenceNotify: true },
+          meta: { title: "Claude Code · Pocket Agent", presetId: "claude", presetName: "Claude Code", cwd: "/tmp", createdAt: 123, silenceNotify: true },
           exit: null,
         },
         // host 已死且无 exit.json 的残骸：应被清理、不进列表
@@ -395,7 +395,7 @@ test("restore：扫描注册目录恢复 DETACHED 会话，代次翻新，owner 
   const s = list[0];
   assert.equal(s.terminalId, "t-old");
   assert.equal(s.status, "DETACHED");
-  assert.equal(s.title, "Claude Code · CXX");
+  assert.equal(s.title, "Claude Code · Pocket Agent");
   assert.equal(s.ownerDeviceId, null); // 重启后控制权清零
   assert.equal(s.cols, 100);
   // 首个接管者取得控制权后可输入

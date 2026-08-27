@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, truncate, writeFile, appendFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, truncate, writeFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -85,5 +85,23 @@ test("读取时可先瘦身条目，避免尾部窗口长期持有大 metadata",
     });
     assert.ok(JSON.stringify(result.items).length < 1000);
     assert.equal(result.total, 2);
+  });
+});
+
+
+test("RolloutTail detects an atomic replacement even when the new file is larger", async (t) => {
+  await withTempRollout(t, async (path) => {
+    await writeFile(path, item(1) + "\n");
+    const frames = [];
+    const tail = new RolloutTail(path, { onItems: (items, meta) => frames.push({ items, meta }) });
+    t.after(() => tail.close());
+    await tail.start();
+    const replacement = `${path}.tmp`;
+    await writeFile(replacement, [item(10), item(11), item(12)].join("\n") + "\n");
+    await rename(replacement, path);
+    for (let i = 0; i < 30 && frames.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(frames.length >= 2, true);
+    assert.equal(frames.at(-1).meta.snapshot, true);
+    assert.deepEqual(frames.at(-1).items.map((x) => x.payload.message), ["消息 10", "消息 11", "消息 12"]);
   });
 });

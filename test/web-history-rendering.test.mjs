@@ -189,9 +189,30 @@ test("加载更早历史按新增高度补偿滚动位置", () => {
 
 test("PWA 会绕过缓存检查新版前端并在 Service Worker 接管后刷新", () => {
   const swSource = readFileSync(new URL("../web/sw.js", import.meta.url), "utf8");
-  assert.match(swSource, /const CACHE = "pocket-agent-shell-v10"/);
+  assert.match(swSource, /const CACHE = "pocket-agent-shell-v12"/);
   assert.match(swSource, /fetch\(request, \{ cache: "no-store" \}\)/);
   assert.match(webSource, /register\("sw\.js", \{ updateViaCache: "none" \}\)/);
   assert.match(webSource, /addEventListener\("controllerchange"/);
   assert.match(webSource, /location\.reload\(\)/);
+});
+
+test("watch response reconciles a fast first turn that completed before subscription", () => {
+  const source = sourceBetween("function applyWatchRunningState(", "let backgroundWatchTimer");
+  const calls = [];
+  const app = { view: "session", driver: "daemon" };
+  const sandbox = { app, setRunning: (...args) => calls.push(args) };
+  vm.runInNewContext(`${source}\nglobalThis.apply = applyWatchRunningState;`, sandbox);
+
+  sandbox.apply({ running: false });
+  assert.deepEqual(calls, [[false]]);
+
+  calls.length = 0;
+  sandbox.apply({ running: true });
+  assert.deepEqual(calls, [[true, "daemon"]]);
+
+  calls.length = 0;
+  sandbox.apply({}); // old daemon compatibility: no authoritative field
+  assert.deepEqual(calls, []);
+  assert.equal((webSource.match(/applyWatchRunningState\(/g) || []).length, 5,
+    "all watch entry points should reconcile the returned state");
 });

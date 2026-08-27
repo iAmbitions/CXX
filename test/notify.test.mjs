@@ -1,80 +1,73 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Notifier, buildRequest, parseOneBotTarget } from "../daemon/src/notify.mjs";
+import {
+  createJingmeNotifier,
+  isJingmeNotifier,
+  normalizeJingmeConfig,
+  Notifier,
+} from "../daemon/src/notify.mjs";
 
-test("解析 OneBot 11 私聊和群聊目标", () => {
-  assert.deepEqual(parseOneBotTarget("private:3102048152"), {
-    targetType: "private",
-    targetId: "3102048152",
-  });
-  assert.deepEqual(parseOneBotTarget("group:123456"), {
-    targetType: "group",
-    targetId: "123456",
-  });
+const jingme = {
+  appKey: "test-app",
+  appSecret: "test-secret",
+  openTeamId: "team-1",
+  robotId: "robot-1",
+  tenantId: "CN.JD.GROUP",
+  baseUrl: "http://openme.test",
+};
+
+function response(data, { ok = true, status = 200 } = {}) {
+  return { ok, status, json: async () => data };
+}
+
+test("京Me接收人仅接受合法 ERP", () => {
+  assert.deepEqual(createJingmeNotifier("tanchuxiong.1"), { type: "jingme", erp: "tanchuxiong.1" });
+  assert.equal(createJingmeNotifier(""), null);
+  assert.equal(createJingmeNotifier("bad ERP"), null);
+  assert.equal(isJingmeNotifier({ type: "jingme", erp: "a.b" }), true);
+  assert.equal(isJingmeNotifier({ type: "bark", key: "x" }), false);
 });
 
-test("拒绝缺少类型、非数字或非正数的 OneBot 目标", () => {
-  assert.equal(parseOneBotTarget("3102048152"), null);
-  assert.equal(parseOneBotTarget("private:abc"), null);
-  assert.equal(parseOneBotTarget("group:0"), null);
-  assert.equal(parseOneBotTarget("group:"), null);
+test("京Me配置缺失任一敏感字段时不启用", () => {
+  assert.equal(normalizeJingmeConfig({ appKey: "a" }), null);
+  assert.equal(normalizeJingmeConfig({ ...jingme, baseUrl: "ftp://openme.test" }), null);
+  assert.equal(normalizeJingmeConfig(jingme).robotId, "robot-1");
 });
 
-test("构造 OneBot 11 私聊纯文本请求并保留 CXX 消息内容", () => {
-  const request = buildRequest(
-    {
-      type: "onebot11",
-      url: "http://127.0.0.1:4531/send_msg",
-      targetType: "private",
-      targetId: "3102048152",
-      token: "secret-token",
+test("京Me通知依次换取应用和团队令牌，再将摘要发给 ERP", async () => {
+  const calls = [];
+  const notifier = new Notifier([{ type: "jingme", erp: "tanchuxiong.1" }], {
+    jingme,
+    fetch: async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith("/app_access_token")) return response({ code: 0, data: { appAccessToken: "app-token" } });
+      if (url.endsWith("/team_access_token")) return response({ code: 0, data: { teamAccessToken: "team-token" } });
+      return response({ code: 0, data: {} });
     },
-    "任务完成",
-    "正文内容",
-    "https://example.com/session",
-  );
-
-  assert.equal(request.url, "http://127.0.0.1:4531/send_msg");
-  assert.deepEqual(JSON.parse(request.init.body), {
-    message_type: "private",
-    user_id: "3102048152",
-    message: "任务完成\n正文内容\nhttps://example.com/session",
-    auto_escape: true,
   });
-  assert.equal(request.init.headers.authorization, "Bearer secret-token");
+
+  assert.equal(await notifier.send("任务完成", "会话已完成", "https://example.test/CXX/#s=abc"), true);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].url, "http://openme.test/open-api/auth/v1/app_access_token");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { appKey: "test-app", appSecret: "test-secret" });
+  assert.equal(calls[1].url, "http://openme.test/open-api/auth/v1/team_access_token");
+  assert.deepEqual(JSON.parse(calls[1].init.body), { appAccessToken: "app-token", openTeamId: "team-1" });
+  assert.equal(calls[2].url, "http://openme.test/open-api/suite/v1/timline/sendRobotMsg");
+  assert.equal(calls[2].init.headers.authorization, "Bearer team-token");
+  const payload = JSON.parse(calls[2].init.body);
+  assert.equal(payload.erp, "tanchuxiong.1");
+  assert.equal(payload.appId, "test-app");
+  assert.equal(payload.params.robotId, "robot-1");
+  assert.equal(payload.params.body.type, "text");
+  assert.equal(payload.params.body.content, "任务完成\n会话已完成\nhttps://example.test/CXX/#s=abc");
 });
 
-test("构造 OneBot 11 群聊请求", () => {
-  const request = buildRequest(
-    { type: "onebot11", url: "http://127.0.0.1:4531/send_msg", targetType: "group", targetId: "123456" },
-    "标题",
-    "正文",
-  );
-
-  assert.deepEqual(JSON.parse(request.init.body), {
-    message_type: "group",
-    group_id: "123456",
-    message: "标题\n正文",
-    auto_escape: true,
+test("历史渠道被禁用，不会被作为通知发送", async () => {
+  const notifier = new Notifier([{ type: "bark", key: "old" }], {
+    jingme,
+    fetch: async () => { throw new Error("不应请求网络"); },
   });
-  assert.equal(request.init.headers.authorization, undefined);
-});
-
-test("OneBot 11 业务失败响应会记录失败日志", async () => {
-  const logs = [];
-  const notifier = new Notifier(
-    [{ type: "onebot11", url: "http://127.0.0.1:4531/send_msg", targetType: "private", targetId: "1" }],
-    {
-      fetch: async () => ({ ok: true, status: 200, json: async () => ({ status: "failed", retcode: 100 }) }),
-      log: (message) => logs.push(message),
-    },
-  );
-
-  await notifier.send("标题", "正文");
-
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /HTTP 200/);
-  assert.match(logs[0], /status failed/);
-  assert.match(logs[0], /retcode 100/);
+  assert.equal(notifier.count, 0);
+  assert.equal(await notifier.send("标题", "正文"), true);
 });

@@ -9,7 +9,7 @@ import path from "node:path";
 import test from "node:test";
 
 // 模拟 claude CLI 的 stream-json 双向模式,只讲 claude-backend 需要的方言。
-// FAKE_MODE: ok(默认,出 delta 后 30ms 出 result) / hang(只出 delta 等 interrupt) / crash(收到消息即退出)
+// FAKE_MODE: ok(默认,出 delta 后 30ms 出 result) / error(直接返回失败 result) / hang(只出 delta 等 interrupt) / crash(收到消息即退出)
 // FAKE_LOG: 每次启动追加一行 "spawn <pid>",测试用它数冷启动次数
 const FAKE_SOURCE = `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -30,6 +30,7 @@ process.stdin.on("data", (c) => {
     if (msg.type === "user") {
       const isToolResult = msg.message?.content?.some((b) => b?.type === "tool_result");
       if (mode === "crash") process.exit(3);
+      if (mode === "error") { out({ type: "result", subtype: "error_during_execution", is_error: true, result: "模拟请求被上游拒绝" }); continue; }
       out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "he" } } });
       out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "llo" } } });
       if (mode === "hang" && !isToolResult) continue;
@@ -154,11 +155,21 @@ test("AskUserQuestion 回答写回同一常驻 turn,不会新开一轮", async (
   backend.stop();
 });
 
+test("Claude result 失败携带可读错误原因", async () => {
+  const { backend, waitFor } = makeBackend("error");
+  const threadId = tid();
+  await backend.startTurn(threadId, "hi");
+  const failed = await waitFor((e) => e.method === "turn/failed");
+  assert.equal(failed.params.error, "模拟请求被上游拒绝");
+  backend.stop();
+});
+
 test("进程崩溃:轮次收为 turn/failed,下一轮自动重拉", async () => {
   const { backend, waitFor, spawnCount } = makeBackend("crash");
   const threadId = tid();
   await backend.startTurn(threadId, "hi");
-  await waitFor((e) => e.method === "turn/failed");
+  const failed = await waitFor((e) => e.method === "turn/failed");
+  assert.match(failed.params.error, /Claude 进程异常退出/);
   process.env.FAKE_MODE = "ok"; // 桩恢复正常,验证重拉路径
   await backend.startTurn(threadId, "hi");
   await waitFor((e) => e.method === "turn/completed");
