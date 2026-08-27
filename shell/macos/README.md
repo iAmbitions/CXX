@@ -1,4 +1,4 @@
-# CXX macOS menu-bar shell
+# Pocket Agent macOS menu-bar shell
 
 A thin AppKit menu-bar app (`NSStatusItem`, no dock icon). It is a **pure view**: the
 daemon runs as an independent LaunchAgent, and the shell shells out to
