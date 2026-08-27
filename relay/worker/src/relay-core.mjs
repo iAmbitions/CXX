@@ -12,7 +12,7 @@ function cleanMeta(value, max = 64) {
   return String(value || "").replace(/[\x00-\x1f\x7f]/g, " ").trim().slice(0, max);
 }
 
-export function createRelayWorker({ serviceLabel = "cxx relay", handleRequest = null } = {}) {
+export function createRelayWorker({ serviceLabel = "Pocket Agent relay", handleRequest = null } = {}) {
   return {
     async fetch(request, env, ctx) {
       const url = new URL(request.url);
