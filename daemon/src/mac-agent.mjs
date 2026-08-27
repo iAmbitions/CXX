@@ -1,15 +1,15 @@
-// macOS (launchd) keepalive layer for the CXX daemon.
+// macOS (launchd) keepalive layer for the Pocket Agent daemon.
 //
 // In Model A the daemon runs as an independent LaunchAgent, decoupled from the
 // menu-bar shell: the shell shells out (`cxx-daemon enable/disable/status/…`) and
 // the daemon lives under launchd, surviving tray quit. This file is the mac half —
 // plist generation + launchctl — mirroring codex-zh's launcher/mac/remote-backend.mjs.
 //
-// Because the CXX daemon ships as a self-contained SEA binary, the plist points at
+// Because the Pocket Agent daemon ships as a self-contained SEA binary, the plist points at
 // the binary itself via `process.execPath` — whoever runs `cxx-daemon enable` bakes
 // that exact binary path into the plist. If the .app moves, re-running enable (the
 // tray does this implicitly on pair) rewrites it. No separate `node` is required.
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
@@ -18,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import { defaultConfigPath } from "./config.mjs";
 
 export const DAEMON_LABEL = "ai.wokey.cxx.remote";
+export const APP_BUNDLE_ID = "ai.wokey.cxx";
 
 // How to invoke this daemon's `start` from launchd.
 //   SEA binary (cxx-daemon):   [<cxx-daemon>, "start"]
@@ -63,12 +64,38 @@ ${plistValue(dict, 0)}
 `;
 }
 
-// A generous PATH so the launchd-started daemon can find the user's `codex` even
-// though launchd hands processes a bare /usr/bin:/bin. resolveCodexCommand() also
-// probes absolute install locations, so this is belt-and-suspenders.
-function launchdPath() {
-  const home = homedir();
-  return [
+function versionManagerBins(home, readDir = readdirSync) {
+  const bins = [];
+  const collect = (root, suffix) => {
+    try {
+      const versions = readDir(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const version of versions) bins.push(join(root, version, ...suffix));
+    } catch {
+      // Version manager not installed (the common case).
+    }
+  };
+  collect(join(home, ".nvm", "versions", "node"), ["bin"]);
+  collect(join(home, ".fnm", "node-versions"), ["installation", "bin"]);
+  return bins;
+}
+
+// A generous PATH so the launchd-started daemon can run npm/nvm/fnm/Volta/asdf/mise
+// shims even though launchd hands processes a bare /usr/bin:/bin. codexInvocation()
+// additionally converts `#!/usr/bin/env node` shims to an absolute Node invocation,
+// so this remains useful belt-and-suspenders coverage for other child CLIs.
+export function launchdPath(home = homedir(), { env = process.env, readDir = readdirSync } = {}) {
+  const inherited = String(env.PATH || "").split(":").filter(Boolean);
+  return [...new Set([
+    ...inherited,
+    join(home, ".npm-global", "bin"),
+    join(home, ".volta", "bin"),
+    join(home, ".asdf", "shims"),
+    join(home, ".local", "share", "mise", "shims"),
+    join(home, ".fnm", "current", "bin"),
+    ...versionManagerBins(home, readDir),
     "/opt/homebrew/bin",
     "/usr/local/bin",
     join(home, ".local", "bin"),
@@ -77,12 +104,15 @@ function launchdPath() {
     "/bin",
     "/usr/sbin",
     "/sbin",
-  ].join(":");
+  ])].join(":");
 }
 
 export function daemonPlist({ programArguments, logPath }) {
   return buildPlist({
     Label: DAEMON_LABEL,
+    // Tell macOS Background Task Management which app owns this manually installed
+    // LaunchAgent, so System Settings and notifications use the app's branded identity.
+    AssociatedBundleIdentifiers: [APP_BUNDLE_ID],
     ProgramArguments: programArguments,
     EnvironmentVariables: { PATH: launchdPath() },
     RunAtLoad: true,
@@ -102,6 +132,7 @@ export function makeDeps(overrides = {}) {
     homeDir: home,
     uid: overrides.uid ?? (process.getuid ? process.getuid() : 501),
     runLaunchctl: overrides.runLaunchctl || ((args) => spawnSync("launchctl", args, { encoding: "utf8" })),
+    sleep: overrides.sleep || ((ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)),
     log: overrides.log || (() => {}),
     isEnabled,
     isRunning,
@@ -138,14 +169,19 @@ export function enable(deps) {
   const programArguments = daemonProgramArguments(deps.configPath);
   writeFileSync(plistPath(deps), daemonPlist({ programArguments, logPath }));
   deps.runLaunchctl(["bootout", `gui/${deps.uid}/${DAEMON_LABEL}`]); // clear stale, ignore failure
-  const res = deps.runLaunchctl(["bootstrap", `gui/${deps.uid}`, plistPath(deps)]);
-  if (res.status !== 0) {
-    const msg = String(res.stderr || res.stdout || "launchctl bootstrap 失败").trim();
-    deps.log(`bootstrap ${DAEMON_LABEL}: ${msg}`);
-    rmSync(plistPath(deps), { force: true });
-    return { ok: false, enabled: false, error: msg };
+  // launchd may need a short moment to retire the old job after bootout. An immediate
+  // bootstrap occasionally returns “Bad request” during app upgrades even though the
+  // exact same plist succeeds seconds later. Retry locally before rolling the plist back.
+  let res;
+  for (const waitMs of [0, 250, 750]) {
+    if (waitMs) deps.sleep(waitMs);
+    res = deps.runLaunchctl(["bootstrap", `gui/${deps.uid}`, plistPath(deps)]);
+    if (res.status === 0) return { ok: true, enabled: true };
   }
-  return { ok: true, enabled: true };
+  const msg = String(res?.stderr || res?.stdout || "launchctl bootstrap 失败").trim();
+  deps.log(`bootstrap ${DAEMON_LABEL}: ${msg}`);
+  rmSync(plistPath(deps), { force: true });
+  return { ok: false, enabled: false, error: msg };
 }
 
 export function disable(deps) {

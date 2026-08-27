@@ -1,4 +1,4 @@
-// PreToolUse hook logic — routes a Claude Code tool-use approval to the CXX daemon
+// PreToolUse hook logic — routes a Claude Code tool-use approval to the Pocket Agent daemon
 // (→ phone). Runs as a short-lived process spawned by Claude Code per gated tool use.
 //
 // It is invoked as a MODE of the daemon itself (env CXX_PERM_HOOK=1), not a standalone
@@ -34,7 +34,7 @@ export async function runPermHook(url, token) {
   }
 
   // No endpoint wired → allow (a backend without approval routing must not brick turns).
-  if (!url || !token) return decide("allow", "CXX: 未配置审批端点");
+  if (!url || !token) return decide("allow", "Pocket Agent: 未配置审批端点");
 
   const payload = JSON.stringify({
     token,
@@ -61,23 +61,23 @@ export async function runPermHook(url, token) {
         res.on("end", () => {
           try {
             const r = JSON.parse(body);
-            decide(r.decision === "allow" ? "allow" : "deny", r.reason || "CXX 远程审批");
+            decide(r.decision === "allow" ? "allow" : "deny", r.reason || "Pocket Agent 远程审批");
           } catch {
-            decide("deny", "CXX: 审批响应异常");
+            decide("deny", "Pocket Agent: 审批响应异常");
           }
         });
       },
     );
-    req.on("error", () => decide("deny", "CXX: 无法连接审批端点"));
+    req.on("error", () => decide("deny", "Pocket Agent: 无法连接审批端点"));
     // Generous ceiling: approvals may sit until a device comes online to decide.
     req.setTimeout(10 * 60 * 1000, () => {
       req.destroy();
-      decide("deny", "CXX: 审批超时");
+      decide("deny", "Pocket Agent: 审批超时");
     });
     req.write(payload);
     req.end();
   } catch {
-    decide("deny", "CXX: 审批请求失败");
+    decide("deny", "Pocket Agent: 审批请求失败");
   }
 }
 

@@ -64,15 +64,20 @@ const MODEL_LIST_CACHE_MS = 5 * 60 * 1000;
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+\-[\]]{0,127}$/;
 const CLAUDE_MODEL_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CLAUDE_ALLOWED_EFFORTS = new Set([...CLAUDE_MODEL_EFFORTS, "max"]);
-const CLAUDE_FALLBACK_MODELS = [
-  { id: "claude-opus-4-8", displayName: "Opus 4.8" },
-  { id: "claude-sonnet-5", displayName: "Sonnet 5" },
-  { id: "claude-haiku-4-5", displayName: "Haiku 4.5" },
+// Claude Code 的模型别名/真实模型映射来自 settings.env。
+// 例如：ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5，
+//       ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=GPT-5.5。
+// 不再把线上模型名写死在 Pocket Agent 里；只有完全读不到本机配置时才使用极小兜底。
+const CLAUDE_MODEL_FAMILIES = [
+  { alias: "opus", idKey: "ANTHROPIC_DEFAULT_OPUS_MODEL", nameKey: "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME" },
+  { alias: "sonnet", idKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", nameKey: "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME" },
+  { alias: "haiku", idKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL", nameKey: "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME" },
+  { alias: "fable", idKey: "ANTHROPIC_DEFAULT_FABLE_MODEL", nameKey: "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME" },
 ];
-const CLAUDE_DEFAULT_MODEL_CANDIDATES = [
-  "claude-opus-4-8",
-  "claude-sonnet-5",
-  "claude-haiku-4-5",
+const CLAUDE_FALLBACK_MODELS = [
+  { id: "claude-opus-4-8", displayName: "Opus 4.8", description: "Pocket Agent fallback: no local Claude model mapping was found" },
+  { id: "claude-sonnet-5", displayName: "Sonnet 5", description: "Pocket Agent fallback: no local Claude model mapping was found" },
+  { id: "claude-haiku-4-5", displayName: "Haiku 4.5", description: "Pocket Agent fallback: no local Claude model mapping was found" },
 ];
 
 // Base config dir honours CLAUDE_CONFIG_DIR (same override Claude Code itself uses),
@@ -114,6 +119,22 @@ function firstString(...values) {
   return "";
 }
 
+// Claude stream-json 在失败时的字段会随 CLI 版本略有差异。把可读原因收敛成
+// 小而安全的纯文本，既给手机端 live 事件使用，也写入 daemon 日志，避免把整段
+// 原始 payload（可能包含上下文或路径）泄露到远端。
+function turnFailureReason(event, fallback = "Claude 执行失败") {
+  const nested = event?.error;
+  const raw = firstString(
+    event?.result,
+    typeof nested === "string" ? nested : "",
+    nested?.message,
+    event?.message,
+    event?.subtype && event.subtype !== "success" ? event.subtype : "",
+    fallback,
+  );
+  return raw.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 800) || fallback;
+}
+
 function isUsableModelId(id) {
   return typeof id === "string" && MODEL_ID_RE.test(id) && id !== "<synthetic>";
 }
@@ -141,19 +162,57 @@ function readClaudeState() {
   }
 }
 
+function configuredModelFamily(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return CLAUDE_MODEL_FAMILIES.find((family) =>
+    normalized === family.alias || normalized === `claude-${family.alias}`
+  ) ?? null;
+}
+
+function configuredModelId(value, env) {
+  const family = configuredModelFamily(value);
+  return family ? firstString(env?.[family.idKey], value) : value;
+}
+
+function configuredDisplayName(id, env) {
+  const family = CLAUDE_MODEL_FAMILIES.find((candidate) => firstString(env?.[candidate.idKey]) === id);
+  return firstString(env?.[family?.nameKey]) || id;
+}
+
 function configuredDefaultModel(settings, env) {
-  return firstString(
+  return configuredModelId(firstString(
     settings?.model,
     settings?.defaultModel,
     settings?.modelConfig?.model,
     env.CLAUDE_CODE_MODEL,
     env.CLAUDE_MODEL,
     env.ANTHROPIC_MODEL,
-  );
+  ), env);
 }
 
-function configuredModelOptions(state) {
+function configuredEnvironmentModels(env) {
+  const out = [];
+  for (const family of CLAUDE_MODEL_FAMILIES) {
+    const id = firstString(env?.[family.idKey]);
+    if (!isUsableModelId(id)) continue;
+    const displayName = firstString(env?.[family.nameKey]);
+    out.push({
+      id,
+      model: id,
+      displayName: displayName || id,
+      description: `本机配置 · ${family.alias} · ${id}`,
+    });
+  }
+  const configuredModel = firstString(env?.CLAUDE_CODE_MODEL);
+  if (isUsableModelId(configuredModel)) {
+    out.push({ id: configuredModel, model: configuredModel, displayName: configuredModel, description: "本机配置 · CLAUDE_CODE_MODEL" });
+  }
+  return out;
+}
+
+function configuredModelOptions(state, env = {}) {
   return [
+    ...configuredEnvironmentModels(env),
     ...modelOptionsFromValue(state?.additionalModelOptionsCache),
     ...modelOptionsFromValue(state?.modelAccessCache),
     ...modelOptionsFromValue(state?.orgModelDefaultCache),
@@ -221,6 +280,23 @@ function displayNameForModelId(id) {
   return "";
 }
 
+export function buildClaudeModelCatalog({ settings = {}, state = {}, env = {} } = {}) {
+  const defaultModel = configuredDefaultModel(settings, env);
+  const configuredOptions = configuredModelOptions(state, env);
+  const explicitDefault = isUsableModelId(defaultModel)
+    ? [{
+        id: defaultModel,
+        model: defaultModel,
+        displayName: configuredDisplayName(defaultModel, env),
+        description: "本机当前默认配置",
+      }]
+    : [];
+  // 只在没有读取到任何本机模型时使用 fallback，避免把过期/不存在的模型混进选择器。
+  const groups = [explicitDefault, configuredOptions];
+  if (groups.every((group) => group.length === 0)) groups.push(CLAUDE_FALLBACK_MODELS);
+  return mergeModels(groups, defaultModel);
+}
+
 function mergeModels(groups, defaultId) {
   const seen = new Set();
   const out = [];
@@ -234,7 +310,7 @@ function mergeModels(groups, defaultId) {
   }
   const pickedDefault = defaultId && seen.has(defaultId)
     ? defaultId
-    : CLAUDE_DEFAULT_MODEL_CANDIDATES.find((id) => seen.has(id)) ?? out[0]?.id;
+    : out[0]?.id;
   const models = out.map((m) => ({ ...m, isDefault: m.id === pickedDefault }));
   const defaultIndex = models.findIndex((m) => m.isDefault);
   if (defaultIndex > 0) models.unshift(models.splice(defaultIndex, 1)[0]);
@@ -422,7 +498,7 @@ export class ClaudeBackend {
     // and tell the hub to drop their cards.
     for (const [requestId, p] of this.#pending) {
       clearTimeout(p.timer);
-      p.resolve({ decision: "deny", reason: "CXX 已关闭" });
+      p.resolve({ decision: "deny", reason: "Pocket Agent 已关闭" });
       try {
         this.onServerRequestCancel(requestId);
       } catch {
@@ -651,29 +727,14 @@ export class ClaudeBackend {
 
   // —— read API (parity with AppServer) ——
 
-  // Paged newest-first list. Cursor is a numeric offset into the sorted file list
-  // (stringified). Only the sliced page reads file contents, so per-call I/O is
-  // bounded by `limit` regardless of how many sessions exist on disk.
+  // Paged newest-first list. Project pages reuse the projects.list index; the global
+  // timeline still reads only the requested file slice, bounded by `limit`.
   async listThreadsPage({ cursor = null, limit = 2000, cwd = null } = {}) {
+    if (cwd) return this.#projects.page(cwd, { cursor, limit });
     // Cap 2000, parity with AppServer: list rows carry no preview and d2c frames are
     // deflated, so 2000 rows stay well under the relay's 256KiB frame cap.
     const target = Math.max(1, Math.min(2000, limit | 0));
     const all = this.#allSessions();
-    // cwd filter: Claude has no server-side query, and cwd lives inside each session's
-    // meta — so map, then filter. Only reached on project *expand* (not home load), and
-    // Claude session counts are modest; #readMeta is cached so repeats are cheap.
-    if (cwd) {
-      const want = normSep(cwd);
-      const mapped = [];
-      for (const s of all) {
-        const m = await this.#mapSession(s);
-        if (normSep(m.cwd) === want) mapped.push(m);
-      }
-      const off = Math.max(0, Number.parseInt(cursor ?? "0", 10) || 0);
-      const page = mapped.slice(off, off + target);
-      const next = off + page.length;
-      return { items: page, nextCursor: next < mapped.length ? String(next) : null };
-    }
     const offset = Math.max(0, Number.parseInt(cursor ?? "0", 10) || 0);
     const slice = all.slice(offset, offset + target);
     const items = [];
@@ -683,8 +744,8 @@ export class ClaudeBackend {
   }
 
   // Home "by project" aggregation — parity with AppServer.aggregateProjects (project-index.mjs).
-  aggregateProjects() {
-    return this.#projects.get();
+  aggregateProjects({ fresh = false } = {}) {
+    return this.#projects.get({ fresh });
   }
 
   invalidateProjects() {
@@ -956,7 +1017,10 @@ export class ClaudeBackend {
       const resultError = ev.is_error === true || (ev.subtype && ev.subtype !== "success");
       // interrupted 只在轮次确实以错误收场时定性为"中止"——中断请求与自然完成赛跑时，
       // 成功的 result 应如实上报 completed（内容已完整落盘，报"已中止"是误导）
-      this.#finishTurn(proc, resultError ? (proc.interrupted ? "turn/aborted" : "turn/failed") : "turn/completed");
+      const method = resultError ? (proc.interrupted ? "turn/aborted" : "turn/failed") : "turn/completed";
+      const extra = resultError && !proc.interrupted ? { error: turnFailureReason(ev) } : {};
+      if (extra.error) this.#log(`claude 轮次失败: ${extra.error}`);
+      this.#finishTurn(proc, method, extra);
       return;
     }
     if (ev.type === "control_response") {
@@ -972,7 +1036,7 @@ export class ClaudeBackend {
   // Turn boundary bookkeeping shared by the normal path (result event) and the death
   // path (#onProcExit). Any approval still pending belongs to a turn that can't act on
   // the decision anymore — deny it and clear the phone card.
-  #finishTurn(proc, method) {
+  #finishTurn(proc, method, extra = {}) {
     if (!proc.turnId) return;
     const { threadId } = proc;
     const turnId = proc.turnId;
@@ -988,9 +1052,9 @@ export class ClaudeBackend {
     this.#questionResponses.delete(threadId);
     // 只有会话文件已创建才丢 pendingCwd：首轮在落盘前就失败时留着它，重试才不会跑错目录
     if (path) this.#pendingCwd.delete(threadId);
-    this.#cancelApprovals(threadId, "CXX: 轮次已结束");
+    this.#cancelApprovals(threadId, "Pocket Agent: 轮次已结束");
     this.invalidateProjects(); // 新会话/更新时刻变化，令首页立即反映
-    this.onNotification(method, { threadId, turnId });
+    this.onNotification(method, { threadId, turnId, ...extra });
   }
 
   #onProcExit(proc, code) {
@@ -1005,7 +1069,8 @@ export class ClaudeBackend {
     // code===0 + 无 result 的怪异组合也按失败报，宁可让手机看到明确的失败横幅。
     if (proc.turnId) {
       const wasInterrupted = proc.interrupted;
-      this.#finishTurn(proc, wasInterrupted ? "turn/aborted" : "turn/failed");
+      const extra = wasInterrupted ? {} : { error: `Claude 进程异常退出（code=${code}）` };
+      this.#finishTurn(proc, wasInterrupted ? "turn/aborted" : "turn/failed", extra);
       if (!wasInterrupted) this.#log(`claude 轮次进程中途退出(code=${code})`);
     }
   }
@@ -1167,10 +1232,7 @@ export class ClaudeBackend {
     const now = Date.now();
     if (this.#modelCache && now - this.#modelCache.at < MODEL_LIST_CACHE_MS) return this.#modelCache.data;
     const { settings, state, env } = claudeLocalConfig();
-    const defaultModel = configuredDefaultModel(settings, env);
-    const configuredOptions = configuredModelOptions(state);
-    const explicitDefault = isUsableModelId(defaultModel) ? [{ id: defaultModel, model: defaultModel }] : [];
-    const data = mergeModels([explicitDefault, configuredOptions, CLAUDE_FALLBACK_MODELS], defaultModel);
+    const data = buildClaudeModelCatalog({ settings, state, env });
     this.#modelCache = { at: now, data };
     return data;
   }
@@ -1222,7 +1284,7 @@ export class ClaudeBackend {
       // 10 min ceiling mirrors the hook side; on timeout deny so a stuck approval frees.
       const timer = setTimeout(() => {
         this.#pending.delete(requestId);
-        resolve({ decision: "deny", reason: "CXX: 审批超时" });
+        resolve({ decision: "deny", reason: "Pocket Agent: 审批超时" });
       }, 10 * 60 * 1000);
       timer.unref?.();
       this.#pending.set(requestId, { resolve, timer, threadId: sessionId });
@@ -1293,7 +1355,7 @@ export class ClaudeBackend {
     this.#pending.delete(requestId);
     clearTimeout(p.timer);
     const allow = result?.decision === "accept" || result?.decision === "acceptForSession";
-    p.resolve({ decision: allow ? "allow" : "deny", reason: "CXX 远程审批" });
+    p.resolve({ decision: allow ? "allow" : "deny", reason: "Pocket Agent 远程审批" });
   }
 
   respondError(requestId) {
@@ -1301,6 +1363,6 @@ export class ClaudeBackend {
     if (!p) return;
     this.#pending.delete(requestId);
     clearTimeout(p.timer);
-    p.resolve({ decision: "deny", reason: "CXX: 审批处理异常" });
+    p.resolve({ decision: "deny", reason: "Pocket Agent: 审批处理异常" });
   }
 }

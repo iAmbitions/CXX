@@ -1,4 +1,4 @@
-// CXX 自身版本（供托盘「检查更新」比对）。
+// Pocket Agent 自身版本。
 //
 // SEA 打包没有随行的 package.json，版本在 build-sea.mjs 里用 esbuild --define 把
 // __CXX_VERSION__ 烧进 bundle；dev 直跑源码时该标识符不存在，回退读仓库根 package.json。

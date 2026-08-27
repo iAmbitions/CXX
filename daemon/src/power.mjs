@@ -40,7 +40,7 @@ export class PowerManager {
       case "linux":
         return [
           "systemd-inhibit",
-          ["--what=sleep", "--who=CXX Remote", "--why=daemon active", "--mode=block", "sleep", "infinity"],
+          ["--what=sleep", "--who=Pocket Agent Remote", "--why=daemon active", "--mode=block", "sleep", "infinity"],
         ];
       default:
         return null;

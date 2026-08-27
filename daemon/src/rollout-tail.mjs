@@ -131,6 +131,7 @@ async function scanRollout(path, {
       total,
       ident: rolloutIdent(firstItem),
       size: info.size,
+      fileKey: `${info.dev}:${info.ino}:${info.birthtimeMs}`,
       completeSize,
       pendingText,
       pendingOversized: lineState.oversized,
@@ -208,6 +209,7 @@ export class RolloutTail {
   #pendingText = "";
   #pendingOversized = false;
   #total = 0;
+  #fileKey = null;
   #watcher = null;
   #reading = false;
   #dirty = false;
@@ -263,6 +265,7 @@ export class RolloutTail {
     this.#pendingText = snapshot.pendingText;
     this.#pendingOversized = snapshot.pendingOversized;
     this.#total = snapshot.total;
+    this.#fileKey = snapshot.fileKey ?? null;
   }
 
   #serialize(fn) {
@@ -293,9 +296,12 @@ export class RolloutTail {
 
   async #readAppended() {
     const info = await stat(this.#path);
-    if (info.size === this.#offset) return;
-    // 文件被截断/替换：旧字节游标已失效，直接下发新的尾部快照。
-    if (info.size < this.#offset) {
+    const fileKey = `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+    if (info.size === this.#offset && fileKey === this.#fileKey) return;
+    // 文件被截断或原子替换：旧字节游标已失效，直接下发新的尾部快照。
+    // OpenCode 适配层会把 API 消息快照写到临时文件后 rename，文件可能比旧文件更大，
+    // 因此不能只比较 size，还必须比较 inode/出生时间。
+    if (info.size < this.#offset || (this.#fileKey && fileKey !== this.#fileKey)) {
       const snapshot = await readRolloutTail(this.#path, SNAPSHOT_MAX_ITEMS, {
         mapItem: this.#mapItem,
       });
@@ -312,6 +318,7 @@ export class RolloutTail {
       mapItem: this.#mapItem,
     });
     this.#offset = result.size;
+    this.#fileKey = result.fileKey ?? fileKey;
     this.#pendingText = result.pendingText;
     this.#pendingOversized = result.pendingOversized;
     this.#total += result.total;

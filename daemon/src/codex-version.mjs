@@ -1,6 +1,6 @@
 // Minimum-supported-version gate for the official `codex` CLI.
 //
-// `app-server` is still experimental upstream, so the JSON-RPC surface CXX depends on
+// `app-server` is still experimental upstream, so the JSON-RPC surface Pocket Agent depends on
 // (initialize, thread/*, turn/*, approval flow, experimental collaborationMode/goal) can
 // shift between releases. We pin a documented minimum and check it at daemon startup so a
 // too-old codex fails with a clear message instead of mysterious mid-session RPC errors.

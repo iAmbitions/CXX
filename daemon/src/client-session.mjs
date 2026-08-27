@@ -208,6 +208,9 @@ export function sanitizeTurnOptions(raw) {
   if (typeof raw.effort === "string" && /^[a-z]{1,16}$/.test(raw.effort)) out.effort = raw.effort;
   if (APPROVAL_POLICIES.has(raw.approvalPolicy)) out.approvalPolicy = raw.approvalPolicy;
   if (SANDBOX_TYPES.has(raw.sandboxPolicy?.type)) out.sandboxPolicy = { type: raw.sandboxPolicy.type };
+  if (["default", "readonly", "auto", "full"].includes(raw.permissionPreset)) {
+    out.permissionPreset = raw.permissionPreset;
+  }
   if (raw.plan === true) out.plan = true; // hub 展开为 collaborationMode {mode:"plan"}
   return Object.keys(out).length ? out : undefined;
 }
@@ -485,8 +488,11 @@ export class ClientSession {
     for (const hub of this.#allHubs()) hub?.removeClient(this);
   }
 
-  // 收到该 client 的一帧信封
+  // 收到该 client 的一帧信封。传输/加密错误与业务请求错误必须分开处理：
+  // 前者说明连接不可信，需要断开；后者（例如 thread/list 暂时超时）只应让本次 RPC 失败，
+  // 不能把仍然健康的手机 WebSocket 一并掐掉，否则列表读取偶发变慢会表现成持续重连。
   async onEnvelope(envelope) {
+    let message;
     try {
       if (!this.#key) {
         if (envelope.v !== 1 || typeof envelope.k !== "string") {
@@ -511,13 +517,26 @@ export class ClientSession {
       } else if (this.#recvSeq > 0) {
         throw new Error("信封缺失序号（疑似重放）");
       }
-      const message = sealedOpen(this.#key, "c2d", envelope);
+      message = sealedOpen(this.#key, "c2d", envelope);
       if (envelope.s !== undefined) this.#recvSeq = envelope.s;
+    } catch (err) {
+      // 握手、解密或序号校验失败 = 非法/损坏对端，直接断开。
+      this.#daemon.log(`client ${this.#cid} 信封校验失败: ${err.message}`);
+      this.#close();
+      return;
+    }
+
+    try {
       await this.#onMessage(message);
     } catch (err) {
-      // 解密失败 = 非法对端，直接断开
-      this.#daemon.log(`client ${this.#cid} 消息处理失败: ${err.message}`);
-      this.#close();
+      // 后端超时、文件瞬时不可读等属于单次 RPC 失败。回错误给手机但保留连接，
+      // 这样用户可重试，心跳与正在进行的会话也不会被无关的列表错误打断。
+      const detail = err?.message ?? String(err);
+      this.#daemon.log(`client ${this.#cid} 请求处理失败 (${message?.method ?? "unknown"}): ${detail}`);
+      this.#reply(message?.id, null, {
+        code: Number.isInteger(err?.code) ? err.code : 500,
+        message: detail || "请求处理失败",
+      });
     }
   }
 
@@ -557,7 +576,7 @@ export class ClientSession {
         return;
       }
       case "agents.list":
-        // 手机端首页下拉数据源：已注册的可切换 agent（codex / claude）
+        // 手机端首页下拉数据源：已注册的可切换 agent（codex / claude / opencode）
         this.#reply(message.id, {
           agents: this.#daemon.availableAgents?.() ?? [{ id: "codex", name: "ChatGPT", healthy: true }],
         });
@@ -950,7 +969,7 @@ export class ClientSession {
           this.#reply(message.id, null, { code: 400, message: "缺少 sessionId" });
           return;
         }
-        if (agent !== "codex") {
+        if (agent === "claude") {
           this.#reply(message.id, null, { code: 400, message: "该后端暂不支持打分支" });
           return;
         }
@@ -1543,8 +1562,8 @@ export class ClientSession {
     // 回放模式（fromStart）：分享跑完的会话是主场景，读一个创造过程应从头
     // 往后读。仅对已结束的会话生效——在跑（或文件近 60s 活跃，覆盖桌面 GUI
     // 驱动）时忽略之，回落尾部实时模式。已知边界：回放中会话复活不自动转直播。
-    const running =
-      this.#hub(agent).isRunning(sessionId) || this.#isFileActive(thread.path, Date.now());
+    const daemonRunning = this.#hub(agent).isRunning(sessionId);
+    const running = daemonRunning || this.#isFileActive(thread.path, Date.now());
     if (message.params?.fromStart && !running) {
       this.#replayPath = thread.path;
       const { items, total } = await readRolloutWindow(thread.path, 0, 500, {
@@ -1552,7 +1571,10 @@ export class ClientSession {
       });
       if (this.#watchSuperseded(gen, message.id)) return; // 读文件期间已被新 watch 接管
       this.#armWatchLease(message.params?.leaseMs);
-      this.#reply(message.id, { ok: true, mode: "replay", total });
+      // running 是 daemon 当前的权威轮次状态。新会话首轮可能在 session.start 应答与
+      // watch 建立之间就结束，客户端会错过 turn/completed/board.changed；把状态放进
+      // watch 应答可在接入时补账，避免正文已出现却永久卡在“回复中”。
+      this.#reply(message.id, { ok: true, mode: "replay", total, running: daemonRunning });
       this.#sendItems(sessionId, items, { snapshot: true, total, replayFrom: 0 });
       this.#replayOffset = items.length;
       return;
@@ -1572,7 +1594,7 @@ export class ClientSession {
       onError: (err) => this.#daemon.log(`tail ${sessionId} 失败: ${err.message}`),
     });
     this.#armWatchLease(message.params?.leaseMs);
-    this.#reply(message.id, { ok: true, mode: "tail" });
+    this.#reply(message.id, { ok: true, mode: "tail", running: daemonRunning });
     await this.#tail.start();
   }
 

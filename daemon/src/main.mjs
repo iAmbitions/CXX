@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CXX daemon 入口（C叉叉 — ChatGPT/codex CLI 的独立手机远程控制）
+// 口袋Agent daemon 入口（ChatGPT/codex CLI 的独立手机远程控制）
 // 用法：
 //   node daemon/src/main.mjs start [--config <path>] [--relay <wss://...>] [--codex <cmd>]
 //   node daemon/src/main.mjs pair  [--config <path>]
@@ -16,6 +16,8 @@ import { resolveCodexCommand } from "./codex-path.mjs";
 import { MIN_CODEX_VERSION, checkCodexVersion } from "./codex-version.mjs";
 import { claudeAvailable, resolveClaudeCommand } from "./claude-path.mjs";
 import { MIN_CLAUDE_VERSION, checkClaudeVersion } from "./claude-version.mjs";
+import { OpenCodeBackend } from "./opencode-backend.mjs";
+import { openCodeAvailable, resolveOpenCodeCommand } from "./opencode-path.mjs";
 import { resolveAppServerPort } from "./free-port.mjs";
 import {
   PAIR_TOKEN_TTL_MS,
@@ -30,16 +32,18 @@ import {
 import { enforceDevices, watchConfig } from "./config-watch.mjs";
 import { privateKeyFromPem } from "./crypto.mjs";
 import { acquireDaemonLock, releaseDaemonLock } from "./daemon-lock.mjs";
-import { isHttpUrl, Notifier, normalizeNotifier, parseOneBotTarget, redact } from "./notify.mjs";
+import { createJingmeNotifier, isJingmeNotifier, normalizeJingmeConfig, Notifier, redact } from "./notify.mjs";
 import { MENU_COMMANDS, runMenuCommand } from "./menu-backend.mjs";
 import { makeDeps as makeMacAgentDeps } from "./mac-agent.mjs";
 import { makeDeps as makeWinAgentDeps } from "./win-agent.mjs";
 import { makeDeps as makeLinuxAgentDeps } from "./linux-agent.mjs";
 import { PowerManager } from "./power.mjs";
 import { resolvePtyHostBin } from "./pty-adapter.mjs";
+import { ExternalSessionSync } from "./external-session-sync.mjs";
 import { RelayLink } from "./relay-link.mjs";
 import { RtcLink } from "./rtc-link.mjs";
 import { SessionHub } from "./session-hub.mjs";
+import { captureAgentEnv } from "./shell-env.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
 import { cxxVersion } from "./version.mjs";
 import { resolve as resolvePath, sep as pathSep } from "node:path";
@@ -101,7 +105,7 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
     }
   }
   let changed = false;
-  for (const key of ["relayUrl", "webUrl", "codexCommand", "claudeCommand"]) {
+  for (const key of ["relayUrl", "webUrl", "codexCommand", "claudeCommand", "opencodeCommand"]) {
     if (overrides[key] && overrides[key] !== config[key]) {
       config[key] = overrides[key];
       changed = true;
@@ -140,11 +144,16 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
   // 起新引擎前先清理上次崩溃/被强杀遗留的 codex（正常 stop 不会有残留；此为兜底）
   const appServerPidFile = join(dirname(configPath), "app-server.pid");
   reapStaleAppServer(appServerPidFile, log);
+  // Finder/launchd 启动时不会读取 ~/.zprofile / ~/.zshrc。各 Agent 的自定义 provider
+  // 常用环境变量引用 API Token，因此启动引擎前采集用户登录/交互 shell 环境。只传给
+  // 本机 Agent 子进程，不落配置、不打印变量值，也不发送到手机或 relay。
+  const agentEnv = await captureAgentEnv();
   const appServer = new AppServer({
     command: resolvedCodex,
     port: appServerPort,
     log,
     pidFile: appServerPidFile,
+    env: agentEnv,
   });
   try {
     await appServer.start();
@@ -164,7 +173,7 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
   const power = new PowerManager({ log });
   // let（非 const）：配置文件变更时（桌面「通知设置」走独立 CLI 进程写盘 notifiers）
   // 在 onConfig 里重建 Notifier，让渠道增删对运行中的 daemon 即时生效，无需重启。
-  let notifier = new Notifier(config.notifiers ?? [], { log });
+  let notifier = new Notifier(config.notifiers ?? [], { log, jingme: config.jingme });
   // 会话名缓存（通知文案用会话 name，不用 preview，避免泄露首条消息内容）
   const nameCache = new Map();
   async function sessionName(id, backend = appServer) {
@@ -284,6 +293,55 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
     }
   }
 
+  // —— OpenCode 后端（可选，第三个可切换 agent）——
+  // 运行本机 loopback-only `opencode serve`，通过官方 HTTP/SSE API 驱动会话；
+  // relay 仍只连接口袋Agent daemon，不会把 OpenCode API 端口暴露到局域网或公网。
+  // 路径探测和实际子进程使用同一份完整 Agent 环境：这样 Finder/launchd 启动时，
+  // 写在 .zprofile/.zshrc 中的 NVM/FNM/PNPM/Bun PATH 与 Provider Token 都能生效。
+  const resolvedOpenCode = resolveOpenCodeCommand(config.opencodeCommand, { env: agentEnv });
+  if (openCodeAvailable(resolvedOpenCode, { env: agentEnv })) {
+    const { port: openCodePort } = await resolveAppServerPort(0);
+    const openCodeBackend = new OpenCodeBackend({
+      command: resolvedOpenCode,
+      port: openCodePort,
+      baseDir: join(dirname(configPath), "opencode-transcripts"),
+      log,
+      env: agentEnv,
+    });
+    try {
+      // 先接好 Hub 回调再启动 SSE，避免服务启动瞬间的状态/审批事件落在空回调上。
+      const openCodeHub = new SessionHub(openCodeBackend, {
+        log,
+        agent: "opencode",
+        onAwakeChange(want) {
+          if (config.preventSleep === false) return;
+          want ? power.acquire() : power.release();
+        },
+        onViewersChange: scheduleViewerStatusWrite,
+        async onEvent(type, { sessionId, clientsOnline }) {
+          if (notifier.count === 0) return;
+          const name = await sessionName(sessionId, openCodeBackend);
+          const link = config.webUrl
+            ? `${config.webUrl.replace(/\/+$/, "/")}#s=${encodeURIComponent(sessionId)}&a=opencode`
+            : undefined;
+          if (type === "approval") await notifier.send("OpenCode 需要审批", `会话「${name}」有操作待你批准`, link);
+          else if (type === "turnCompleted" && clientsOnline === 0) await notifier.send("OpenCode 等你输入", `会话「${name}」回合结束，轮到你回复`, link);
+        },
+      });
+      openCodeBackend.onStateChange = (healthy) => {
+        if (!healthy) openCodeHub.engineReset();
+        openCodeHub.broadcastEngineState(healthy);
+      };
+      await openCodeBackend.start();
+      backends.opencode = openCodeBackend;
+      hubs.opencode = openCodeHub;
+      log(`OpenCode agent 已注册: ${resolvedOpenCode}`);
+    } catch (err) {
+      openCodeBackend.stop();
+      log(`OpenCode agent 注册失败，已跳过: ${err.message}`);
+    }
+  }
+
   const sessions = new Map(); // cid -> ClientSession
   const daemonContext = {
     config,
@@ -291,11 +349,11 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
     privateKey: privateKeyFromPem(config.privateKeyPem),
     appServer, // 默认 agent（codex）后端，向后兼容既有代码路径
     hub, // 默认 agent（codex）hub
-    backends, // { codex, claude? } —— 按 agent 路由
-    hubs, // { codex, claude? }
+    backends, // { codex, claude?, opencode? } —— 按 agent 路由
+    hubs, // { codex, claude?, opencode? }
     // 手机端下拉可选的 agent 列表（仅注册成功的后端）
     availableAgents() {
-      const label = { codex: "ChatGPT", claude: "Claude Code" };
+      const label = { codex: "ChatGPT", claude: "Claude Code", opencode: "OpenCode" };
       return Object.keys(backends).map((id) => ({
         id,
         name: label[id] ?? id,
@@ -466,6 +524,11 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
   relay.start();
   scheduleViewerStatusWrite(); // 启动即写：清掉异常退出残留的观众计数
 
+  // Codex Desktop / Claude Code 自己创建的会话不会经过本 daemon。仅在有完整
+  // 手机连接时按 60 秒核对最近条目，变化后发一个无内容的刷新提示给手机。
+  const externalSessionSync = new ExternalSessionSync({ backends, hubs, log });
+  externalSessionSync.start();
+
   // 撤销/过期即踢：配置文件变更（桌面撤销走独立 CLI 进程写盘）与 60s 定时器
   // （覆盖 expiresAt 到期）双路触发设备表核对。
   const enforce = () =>
@@ -476,7 +539,7 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
         daemonContext.config = fresh;
         // 通知渠道热加载：Notifier 持有的是启动时的旧数组，配置换新后须重建，
         // 否则「通知设置」里增删的渠道要等 daemon 重启才生效。
-        notifier = new Notifier(fresh.notifiers ?? [], { log });
+        notifier = new Notifier(fresh.notifiers ?? [], { log, jingme: fresh.jingme });
         // 战报对账：桌面端撤销/到期时观众可能早已离线，onKicked 踢不到人；
         // 以「配置中仍存在且未过期的 viewer」为准，孤儿统计也交出战报
         const valid = new Set(
@@ -555,6 +618,7 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
     stop() {
       configWatcher.close();
       clearInterval(expiryTimer);
+      externalSessionSync.stop();
       relay.stop();
       rtc?.stop();
       for (const backend of Object.values(backends)) backend.stop();
@@ -573,10 +637,10 @@ export async function startDaemon({ configPath, overrides = {}, emit = () => {} 
 }
 
 // 全局 CLI 帮助。裸 `cxx` 与 `cxx help` / `--help` 都打印它。
-// 分组按「日常最常用 → 偏运维」排列；GUI 专用的 JSON 子命令（pair-once / notify-* /
-// check-update 的机读形态）不在这里列，避免误导人手敲——人用 notify --... 这套。
+// 分组按「日常最常用 → 偏运维」排列；GUI 专用的 JSON 子命令（pair-once / notify-*）
+// 不在这里列，避免误导人手敲——人用 notify --... 这套。
 // 在无菜单栏的 headless Mac / 服务器上，这套子命令就是唯一入口。
-const HELP = `CXX（C叉叉）— 用手机远程控制本机的 ChatGPT / Claude Code
+const HELP = `口袋Agent（Pocket Agent）— 用手机远程控制本机的 ChatGPT / Claude Code / OpenCode
 
 用法: cxx <命令> [选项]
 
@@ -588,31 +652,26 @@ const HELP = `CXX（C叉叉）— 用手机远程控制本机的 ChatGPT / Claud
   start                 前台启动 daemon（一般由系统服务托管；无头调试可直接敲）
       --relay <wss://…>   指定 relay 地址（持久化到配置）
       --claude <cmd>      指定 claude 二进制路径（缺省自动探测）
+      --opencode <cmd>    指定 opencode 二进制路径（缺省自动探测）
       --codex <cmd>       指定 codex 二进制路径（缺省自动探测）
       --no-prevent-sleep  运行期间不阻止系统睡眠
 
 配对与设备:
-  pair                  生成永久设备链接（JSON: url；手机打开后长期绑定，可 revoke）
-  pair-once             生成一次性配对链接（5 分钟有效，适合临时发出去）
+  pair                  生成临时配对链接（5 分钟有效；成功连接后才创建设备记录）
+  pair-once             与 pair 相同的兼容别名
+  pair-permanent        生成长期配对链接（泄露时在“已配对设备”撤销）
   devices               列出已配对设备（JSON）
   revoke <deviceId>     撤销某台设备（立即踢线）
   prune-unused          清理从未上线过的设备
 
-通知（任务完成/待审批时推到手机，只发摘要不含代码原文）:
-  notify --list                     列出已配置渠道
-  notify --add bark --key <key>     Bark（iOS，可加 --server 自托管地址）
-  notify --add serverchan --key <k> Server 酱（微信）
-  notify --add wecom --url <url>    企业微信群机器人
-  notify --add dingtalk --url <url> 钉钉群机器人
-  notify --add custom --url <url>   自定义 webhook
-  notify --add onebot11 --url <url>/send_msg --target private:<QQ号> [--token <令牌>]
-                                      OneBot 11（NapCat）纯文本
-  notify --remove <序号>            删除第 N 个渠道
-  notify --clear                    清空所有渠道
-  notify --test                     向所有渠道发测试通知
+通知（任务完成/待审批时推送摘要，不含代码原文）:
+  notify --list                     列出京Me通知接收人
+  notify --add jingme --erp <ERP>   添加京Me机器人接收人
+  notify --remove <序号>            删除接收人
+  notify --clear                    清空接收人
+  notify --test                     向所有接收人发送测试通知
 
 其他:
-  check-update          检查是否有新版本
   help, --help, -h      显示本帮助
   version, --version    显示版本号
 
@@ -620,31 +679,35 @@ const HELP = `CXX（C叉叉）— 用手机远程控制本机的 ChatGPT / Claud
   --config <path>       指定配置文件路径（缺省 ~ 下默认位置）
 
 示例:
-  cxx pair                          # 配对手机
-  cxx notify --add bark --key abc   # 加一个 Bark 通知渠道
+  cxx pair-permanent
+  cxx pair              # 临时 5 分钟配对码
+  cxx notify --add jingme --erp tanchuxiong.1
   cxx status                        # 看远程是否在跑`;
 
-const NOTIFY_USAGE = `通知渠道管理：
-  notify --list                       列出已配置渠道
-  notify --add bark --key <key>       添加 Bark（iOS，可加 --server 自托管地址）
-  notify --add serverchan --key <key> 添加 Server 酱（微信）
-  notify --add wecom --url <url>      添加企业微信群机器人
-  notify --add dingtalk --url <url>   添加钉钉群机器人
-  notify --add custom --url <url>     添加自定义 webhook
-  notify --add onebot11 --url <url>   添加 OneBot 11（另需 --target）
-      --target private:<QQ号>         发给 QQ 用户
-      --target group:<群号>           发到 QQ 群
-      --token <令牌>                  可选的 HTTP Bearer 令牌
-  notify --remove <index>             删除第 N 个渠道
-  notify --clear                      清空所有渠道
-  notify --test                       向所有渠道发测试通知`;
+const NOTIFY_USAGE = `京Me机器人通知：
+  notify --list                     列出已配置接收人
+  notify --add jingme --erp <ERP>   添加接收人
+  notify --remove <index>           删除第 N 个接收人
+  notify --clear                    清空所有接收人
+  notify --test                     向所有接收人发送测试通知
+
+说明：机器人凭据仅保存在本机 daemon.json 的 jingme 字段，绝不写入源码或日志。`;
+
+function jingmeOnly(config) {
+  const before = Array.isArray(config.notifiers) ? config.notifiers : [];
+  const next = before.filter(isJingmeNotifier);
+  const changed = next.length !== before.length;
+  config.notifiers = next;
+  return changed;
+}
 
 async function notifyCommand(configPath, values) {
   const config = loadOrCreateConfig(configPath);
-  config.notifiers = config.notifiers ?? [];
+  const cleanedLegacy = jingmeOnly(config);
+  if (cleanedLegacy) saveConfig(configPath, config); // 历史渠道已禁用，顺手作废其本地配置
 
   if (values.list || (!values.add && !values.remove && !values.clear && !values.test)) {
-    if (config.notifiers.length === 0) console.log("尚未配置任何通知渠道。\n");
+    if (config.notifiers.length === 0) console.log("尚未配置京Me通知接收人。\n");
     else config.notifiers.forEach((n, i) => console.log(`  [${i}] ${redact(n)}`));
     if (!values.list) console.log(`\n${NOTIFY_USAGE}`);
     return;
@@ -652,7 +715,7 @@ async function notifyCommand(configPath, values) {
   if (values.clear) {
     config.notifiers = [];
     saveConfig(configPath, config);
-    console.log("已清空所有通知渠道。");
+    console.log("已清空所有京Me通知接收人。");
     return;
   }
   if (values.remove !== undefined) {
@@ -667,53 +730,34 @@ async function notifyCommand(configPath, values) {
     return;
   }
   if (values.add) {
-    const type = values.add;
-    const needKey = ["bark", "serverchan"];
-    const needUrl = ["wecom", "dingtalk", "custom"];
-    let entry;
-    if (type === "onebot11") {
-      if (!values.url) { console.error("onebot11 需要 --url"); process.exit(1); }
-      if (!isHttpUrl(values.url)) {
-        console.error("onebot11 的 --url 必须是 http:// 或 https:// 地址");
-        process.exit(1);
-      }
-      const target = parseOneBotTarget(values.target);
-      if (!target) {
-        console.error("onebot11 需要 --target private:<QQ号> 或 group:<群号>");
-        process.exit(1);
-      }
-      if (values.token !== undefined && !values.token.trim()) {
-        console.error("onebot11 的 --token 不能为空");
-        process.exit(1);
-      }
-      entry = { type, url: values.url, ...target };
-      if (values.token !== undefined) entry.token = values.token.trim();
-    } else if (needKey.includes(type)) {
-      if (!values.key) { console.error(`${type} 需要 --key`); process.exit(1); }
-      entry = { type, key: values.key };
-      if (type === "bark" && values.server) entry.server = values.server;
-    } else if (needUrl.includes(type)) {
-      if (!values.url) { console.error(`${type} 需要 --url`); process.exit(1); }
-      entry = { type, url: values.url };
-    } else {
-      console.error(`未知渠道类型: ${type}\n\n${NOTIFY_USAGE}`);
+    if (values.add !== "jingme") {
+      console.error(`仅支持京Me机器人通知。\n\n${NOTIFY_USAGE}`);
       process.exit(1);
     }
-    config.notifiers.push(normalizeNotifier(entry));
+    const entry = createJingmeNotifier(values.erp);
+    if (!entry) {
+      console.error("jingme 需要 --erp <ERP>（仅支持字母、数字、点、下划线和连字符）。");
+      process.exit(1);
+    }
+    if (!normalizeJingmeConfig(config.jingme)) {
+      console.error("本机未配置京Me机器人凭据，无法添加接收人。");
+      process.exit(1);
+    }
+    if (!config.notifiers.some((n) => n.erp === entry.erp)) config.notifiers.push(entry);
     saveConfig(configPath, config);
-    console.log(`已添加 ${redact(entry)}（当前 ${config.notifiers.length} 个渠道）`);
+    console.log(`已添加 ${redact(entry)}（当前 ${config.notifiers.length} 个接收人）`);
     return;
   }
   if (values.test) {
-    const notifier = new Notifier(config.notifiers, { log: (m) => console.log(m) });
-    if (notifier.count === 0) { console.error("尚未配置通知渠道。"); process.exit(1); }
-    console.log(`向 ${notifier.count} 个渠道发送测试通知…`);
-    const sent = await notifier.send("ChatGPT 远程测试", "如果你收到这条，说明通知渠道配置成功 ✅");
+    const notifier = new Notifier(config.notifiers, { log: (m) => console.log(m), jingme: config.jingme });
+    if (notifier.count === 0) { console.error("尚未配置京Me通知接收人。"); process.exit(1); }
+    console.log(`向 ${notifier.count} 个京Me接收人发送测试通知…`);
+    const sent = await notifier.send("ChatGPT 远程测试", "如果你收到这条，说明京Me机器人通知配置成功 ✅");
     if (!sent) {
-      console.error("测试通知发送失败，请检查渠道配置和日志。");
+      console.error("测试通知发送失败，请检查本机京Me机器人配置和日志。");
       process.exit(1);
     }
-    console.log("已发送（请检查手机是否收到）。");
+    console.log("已发送（请检查京Me是否收到）。");
   }
 }
 
@@ -776,6 +820,7 @@ export async function main() {
       web: { type: "string" },
       codex: { type: "string" },
       claude: { type: "string" }, // 覆盖 claude 二进制路径（缺省自动探测）
+      opencode: { type: "string" }, // 覆盖 opencode 二进制路径（缺省自动探测）
       ipc: { type: "boolean" }, // 壳模式：stdout JSON 事件流 + stdin JSON 命令
       "prevent-sleep": { type: "boolean" }, // --no-prevent-sleep 关闭防睡眠
       help: { type: "boolean", short: "h" },
@@ -783,6 +828,8 @@ export async function main() {
       // notify 命令选项
       list: { type: "boolean" },
       add: { type: "string" },
+      erp: { type: "string" },
+      // 仅为兼容旧 CLI 调用而保留解析；notify 命令不会再使用或保存这些渠道参数。
       key: { type: "string" },
       url: { type: "string" },
       server: { type: "string" },
@@ -833,6 +880,7 @@ export async function main() {
           webUrl: values.web,
           codexCommand: values.codex,
           claudeCommand: values.claude,
+          opencodeCommand: values.opencode,
           preventSleep: values["prevent-sleep"], // undefined 时保持配置默认；--no-prevent-sleep => false
         },
         emit,

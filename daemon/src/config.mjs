@@ -40,12 +40,16 @@ export function loadOrCreateConfig(path = defaultConfigPath()) {
 
     codexCommand: "codex",
     claudeCommand: "claude", // Claude Code CLI；二进制存在时自动作为可切换 agent 提供
+    opencodeCommand: "opencode", // OpenCode CLI；存在时自动作为第三个可切换 agent 提供
     // Claude 轮次默认权限模式（default/plan/acceptEdits/bypassPermissions）。装了 PreToolUse
     // 审批 hook 后，需审批的工具会路由到手机；此项管未拦截工具与 plan 模式的默认行为。
     claudePermissionMode: "default",
     appServerPort: 19271,
     preventSleep: true, // 有设备在线或任务运行时阻止系统睡眠（允许关屏）
-    notifiers: [], // webhook 通知渠道 [{type:"bark",key} | {type:"onebot11",url,targetType,targetId,token?} ...]
+    // 京Me机器人私有凭据：仅写入本机 daemon.json（0600），不得提交到源码或分享给他人。
+    // 形如 { appKey, appSecret, openTeamId, robotId, tenantId?, baseUrl? }；未配置则通知不可用。
+    jingme: null,
+    notifiers: [], // 仅京Me接收人 [{ type: "jingme", erp: "your.erp" }]
     devices: [],
     pairTokens: [],
   };
@@ -102,16 +106,26 @@ export function isDeviceExpired(device, now = Date.now()) {
 
 // 校验并消费配对令牌；daemon 进程在每次配对尝试时重读配置，
 // 使 `pair` 命令在独立进程中签发的令牌立即生效。
-export function consumePairToken(path, token) {
+export function consumePairToken(path, token, { reuseDeviceToken = "" } = {}) {
   const config = loadOrCreateConfig(path);
   const now = Date.now();
   const hash = sha256(token);
   const found = (config.pairTokens ?? []).find((t) => t.hash === hash && t.expiresAt > now);
   if (!found) return null;
   config.pairTokens = config.pairTokens.filter((t) => t !== found && t.expiresAt > now);
+
+  // Re-pairing the same browser to this daemon should rotate nothing and create
+  // no second device. The existing device token is already an authorization;
+  // the fresh pairing token only proves that the user intentionally paired again.
+  const existing = reuseDeviceToken ? findDeviceByToken(config, reuseDeviceToken) : null;
+  if (existing && !isViewerDevice(existing) && !isDeviceExpired(existing, now)) {
+    saveConfig(path, config);
+    return { config, device: existing, deviceToken: reuseDeviceToken, reused: true };
+  }
+
   const { device, deviceToken } = createDevice(config);
   saveConfig(path, config);
-  return { config, device, deviceToken };
+  return { config, device, deviceToken, reused: false };
 }
 
 // 直接签发一个长期设备令牌（永久链接/QR 用）——等价于配对消费的产物，

@@ -1,194 +1,183 @@
-// Webhook 通知：任务完成 / 需要审批时主动推到手机，弥补国内 Web Push 不可用。
-// 关键约束：通知走第三方明文渠道，只发摘要（事件类型 + 会话名），
-// 绝不含命令原文、代码、文件路径（见 public/SECURITY.md 安全需求）。
+// 京Me 机器人通知：任务完成 / 需要审批时主动推到京Me。
+//
+// 机器人凭据只从本机 ~/.cxx/remote/daemon.json 的 jingme 字段读取，绝不写入
+// 源码、Git 仓库或日志。通知正文仍只包含摘要和可选手机端深链，绝不含代码/命令/文件路径。
 const TIMEOUT_MS = 8000;
-const DEFAULT_BARK_SERVER = "https://api.day.app";
+const DEFAULT_JINGME_BASE_URL = "http://openme.jd.local";
+const DEFAULT_JINGME_TENANT_ID = "CN.JD.GROUP";
 
-export function parseOneBotTarget(value) {
-  if (typeof value !== "string") return null;
-  const match = /^(private|group):([1-9]\d*)$/.exec(value.trim());
-  if (!match) return null;
-  return { targetType: match[1], targetId: match[2] };
+function trimmed(value, max = 256) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
-export function isHttpUrl(value) {
-  if (typeof value !== "string") return false;
+// ERP 仅作为京Me 接收人标识；限制为常见 ERP 字符，避免把任意内容拼入请求或配置。
+export function createJingmeNotifier(erp) {
+  const value = trimmed(erp, 64);
+  if (!/^[A-Za-z0-9._-]{2,64}$/.test(value)) return null;
+  return { type: "jingme", erp: value };
+}
+
+export function isJingmeNotifier(value) {
+  return createJingmeNotifier(value?.erp)?.erp != null && value?.type === "jingme";
+}
+
+export function normalizeNotifier(value) {
+  if (value?.type !== "jingme") return value;
+  return createJingmeNotifier(value.erp) ?? { type: "jingme", erp: "" };
+}
+
+// `jingme` 是机器私有配置（0600 的 daemon.json），形如：
+// { appKey, appSecret, openTeamId, robotId, tenantId?, baseUrl? }
+// 缺凭据时返回 null，调用方只会记录脱敏错误，不会向网络发送半成品请求。
+export function normalizeJingmeConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const appKey = trimmed(value.appKey, 128);
+  const appSecret = trimmed(value.appSecret, 256);
+  const openTeamId = trimmed(value.openTeamId, 128);
+  const robotId = trimmed(value.robotId, 128);
+  const tenantId = trimmed(value.tenantId || DEFAULT_JINGME_TENANT_ID, 128);
+  const baseUrl = trimmed(value.baseUrl || DEFAULT_JINGME_BASE_URL, 512).replace(/\/+$/, "");
+  if (!appKey || !appSecret || !openTeamId || !robotId || !tenantId) return null;
   try {
-    const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-export function normalizeNotifier(n) {
-  if (n?.type !== "bark" || typeof n.key !== "string") return n;
-  const raw = n.key.trim();
-  const parsed = parseBarkUrl(raw);
-  if (!parsed) return { ...n, key: raw };
-
-  const { key: _key, server: _server, ...rest } = n;
-  return parsed.server === DEFAULT_BARK_SERVER
-    ? { ...rest, type: "bark", key: parsed.key }
-    : { ...rest, type: "bark", key: parsed.key, server: parsed.server };
-}
-
-function parseBarkUrl(raw) {
-  let url;
-  try {
-    url = new URL(raw);
+    const url = new URL(baseUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   } catch {
     return null;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  const key = url.pathname.split("/").filter(Boolean)[0];
-  if (!key) return null;
-  return { key: safeDecode(key), server: url.origin };
-}
-
-function safeDecode(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-// 构造单个 provider 的请求。返回 { url, init } 供 fetch 调用。
-// link 为可选深链（打开手机端并直达对应会话），只含 webUrl + 会话 id，不含内容。
-export function buildRequest(n, title, body, link) {
-  n = normalizeNotifier(n);
-  switch (n.type) {
-    case "bark": {
-      // Bark（iOS，开源自托管友好）。默认官方服务器，可用 server 覆盖。
-      // url 字段：点通知直接打开手机端页面。
-      const base = (n.server || DEFAULT_BARK_SERVER).replace(/\/$/, "");
-      return {
-        url: `${base}/${encodeURIComponent(n.key)}`,
-        init: json({ title, body, group: "C叉叉", ...(link ? { url: link } : {}) }),
-      };
-    }
-    case "serverchan":
-      // Server 酱（微信推送）
-      return {
-        url: `https://sctapi.ftqq.com/${encodeURIComponent(n.key)}.send`,
-        init: json({ title, desp: link ? `${body}\n\n[打开 ChatGPT 远程](${link})` : body }),
-      };
-    case "wecom":
-      // 企业微信群机器人
-      return { url: n.url, init: json({ msgtype: "text", text: { content: withLink(title, body, link) } }) };
-    case "dingtalk":
-      // 钉钉群机器人
-      return { url: n.url, init: json({ msgtype: "text", text: { content: withLink(title, body, link) } }) };
-    case "custom":
-      // 自定义 webhook：收 {title, body, source, link?}
-      return { url: n.url, init: json({ title, body, source: "cxx-remote", ...(link ? { link } : {}) }) };
-    case "onebot11": {
-      const target = parseOneBotTarget(`${n.targetType}:${n.targetId}`);
-      const url = typeof n.url === "string" ? n.url.trim() : "";
-      if (!target || !isHttpUrl(url)) return null;
-      const targetField = target.targetType === "private" ? "user_id" : "group_id";
-      const headers = {};
-      if (typeof n.token === "string" && n.token.trim()) {
-        headers.authorization = `Bearer ${n.token.trim()}`;
-      }
-      return {
-        url,
-        init: json(
-          {
-            message_type: target.targetType,
-            [targetField]: target.targetId,
-            message: withLink(title, body, link),
-            auto_escape: true,
-          },
-          headers,
-        ),
-      };
-    }
-    default:
-      return null;
-  }
+  return { appKey, appSecret, openTeamId, robotId, tenantId, baseUrl };
 }
 
 function withLink(title, body, link) {
   return link ? `${title}\n${body}\n${link}` : `${title}\n${body}`;
 }
 
-function json(obj, headers = {}) {
+function randomRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().replace(/-/g, "");
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 18)}`;
+}
+
+function json(body, headers = {}) {
   return {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(obj),
+    body: JSON.stringify(body),
   };
 }
 
-// 脱敏展示（日志用）：不暴露完整 key/url
-export function redact(n) {
-  n = normalizeNotifier(n);
-  if (n.key) return `${n.type}:${n.key.slice(0, 4)}…`;
-  if (n.url) {
-    try {
-      return `${n.type}:${new URL(n.url).host}`;
-    } catch {
-      return n.type;
-    }
+async function readJingmeData(fetchImpl, url, init, stage) {
+  let response;
+  try {
+    response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (err) {
+    throw new Error(`${stage} 请求异常：${err?.message ?? String(err)}`);
   }
-  return n.type;
+  if (!response?.ok) throw new Error(`${stage} HTTP ${response?.status ?? "?"}`);
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`${stage} 响应不是有效 JSON`);
+  }
+  if (payload?.code !== 0) throw new Error(`${stage} 失败：${payload?.msg || `code ${payload?.code ?? "?"}`}`);
+  return payload?.data ?? {};
+}
+
+async function getJingmeTeamToken(fetchImpl, settings) {
+  const app = await readJingmeData(
+    fetchImpl,
+    `${settings.baseUrl}/open-api/auth/v1/app_access_token`,
+    json({ appKey: settings.appKey, appSecret: settings.appSecret }),
+    "获取京Me应用令牌",
+  );
+  const appAccessToken = trimmed(app.appAccessToken, 4096);
+  if (!appAccessToken) throw new Error("获取京Me应用令牌失败：响应缺少 appAccessToken");
+  const team = await readJingmeData(
+    fetchImpl,
+    `${settings.baseUrl}/open-api/auth/v1/team_access_token`,
+    json({ appAccessToken, openTeamId: settings.openTeamId }),
+    "获取京Me团队令牌",
+  );
+  const teamAccessToken = trimmed(team.teamAccessToken, 4096);
+  if (!teamAccessToken) throw new Error("获取京Me团队令牌失败：响应缺少 teamAccessToken");
+  return teamAccessToken;
+}
+
+async function sendJingmeMessage(fetchImpl, settings, teamAccessToken, erp, content) {
+  return readJingmeData(
+    fetchImpl,
+    `${settings.baseUrl}/open-api/suite/v1/timline/sendRobotMsg`,
+    json(
+      {
+        appId: settings.appKey,
+        erp,
+        tenantId: settings.tenantId,
+        requestId: randomRequestId(),
+        dateTime: Date.now(),
+        params: {
+          robotId: settings.robotId,
+          body: { type: "text", content },
+        },
+      },
+      { authorization: `Bearer ${teamAccessToken}` },
+    ),
+    `发送京Me消息给 ${erp}`,
+  );
+}
+
+// 脱敏展示：ERP 不是密钥，可帮助用户识别当前接收人；机器人凭据永不展示。
+export function redact(value) {
+  const notifier = normalizeNotifier(value);
+  if (notifier?.type === "jingme") return `京Me:${notifier.erp || "未填写 ERP"}`;
+  return notifier?.type || "未知";
 }
 
 export class Notifier {
   #notifiers;
   #fetch;
   #log;
+  #jingme;
 
-  constructor(notifiers = [], { fetch = globalThis.fetch, log = () => {} } = {}) {
-    this.#notifiers = notifiers;
+  constructor(notifiers = [], { fetch = globalThis.fetch, log = () => {}, jingme = null } = {}) {
+    // 产品已收敛为京Me机器人；历史 Bark/Server酱/Webhook/OneBot 条目一律不再发送。
+    this.#notifiers = (Array.isArray(notifiers) ? notifiers : [])
+      .map(normalizeNotifier)
+      .filter(isJingmeNotifier);
     this.#fetch = fetch;
     this.#log = log;
+    this.#jingme = normalizeJingmeConfig(jingme);
   }
 
   get count() {
     return this.#notifiers.length;
   }
 
-  // 并发发送到所有已配置渠道；单个失败不影响其他，只记日志
   async send(title, body, link) {
     if (this.#notifiers.length === 0) return true;
+    if (!this.#jingme) {
+      this.#log("通知发送失败 京Me: 本机未配置机器人凭据");
+      return false;
+    }
+    let teamAccessToken;
+    try {
+      teamAccessToken = await getJingmeTeamToken(this.#fetch, this.#jingme);
+    } catch (err) {
+      this.#log(`通知发送失败 京Me: ${err.message}`);
+      return false;
+    }
+
+    const content = withLink(title, body, link);
     const results = await Promise.allSettled(
-      this.#notifiers.map(async (n) => {
-        const req = buildRequest(n, title, body, link);
-        if (!req?.url) return false;
-        try {
-          const res = await this.#fetch(req.url, {
-            ...req.init,
-            signal: AbortSignal.timeout(TIMEOUT_MS),
-          });
-          if (!res.ok) {
-            this.#log(`通知发送失败 ${redact(n)}: HTTP ${res.status}`);
-            return false;
-          }
-          if (n.type === "onebot11") {
-            let result;
-            try {
-              result = await res.json();
-            } catch {
-              this.#log(`通知发送失败 ${redact(n)}: HTTP ${res.status}, 响应不是有效的 OneBot 11 JSON`);
-              return false;
-            }
-            if (result?.status !== "ok" || result?.retcode !== 0) {
-              this.#log(
-                `通知发送失败 ${redact(n)}: HTTP ${res.status}, OneBot status ${result?.status ?? "未知"}, retcode ${result?.retcode ?? "未知"}`,
-              );
-              return false;
-            }
-          }
-          return true;
-        } catch (err) {
-          this.#log(`通知发送异常 ${redact(n)}: ${err.message}`);
-          return false;
-        }
-      }),
+      this.#notifiers.map((notifier) =>
+        sendJingmeMessage(this.#fetch, this.#jingme, teamAccessToken, notifier.erp, content),
+      ),
     );
-    return results.every((result) => result.status === "fulfilled" && result.value === true);
+    let ok = true;
+    for (let i = 0; i < results.length; i += 1) {
+      const result = results[i];
+      if (result.status === "fulfilled") continue;
+      ok = false;
+      this.#log(`通知发送失败 ${redact(this.#notifiers[i])}: ${result.reason?.message ?? String(result.reason)}`);
+    }
+    return ok;
   }
 }

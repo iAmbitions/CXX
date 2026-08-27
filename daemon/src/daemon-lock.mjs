@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 
 export class DaemonAlreadyRunningError extends Error {
   constructor(pid) {
-    super(`CXX 后台服务已在运行（pid=${pid}），拒绝启动第二个实例`);
+    super(`口袋Agent后台服务已在运行（pid=${pid}），拒绝启动第二个实例`);
     this.name = "DaemonAlreadyRunningError";
     this.pid = pid;
   }
@@ -50,7 +50,7 @@ export function acquireDaemonLock(configPath, { pid = process.pid, alive = isPro
       existing = JSON.parse(readFileSync(path, "utf8"));
     } catch {
       // 另一进程可能刚用 wx 创建、尚未写完锁文件；宁可拒绝本次启动，也不能删它的锁。
-      throw new Error("CXX 后台服务正在启动，请稍后重试");
+      throw new Error("口袋Agent后台服务正在启动，请稍后重试");
     }
     if (alive(existing?.pid)) throw new DaemonAlreadyRunningError(existing.pid);
 
@@ -60,7 +60,7 @@ export function acquireDaemonLock(configPath, { pid = process.pid, alive = isPro
       if (err?.code !== "ENOENT") throw err;
     }
   }
-  throw new Error("无法获取 CXX daemon 单实例锁");
+  throw new Error("无法获取口袋Agent后台服务单实例锁");
 }
 
 export function releaseDaemonLock(lock) {

@@ -4,10 +4,44 @@
 // - 审批表：待决策的服务端请求（广播给所有设备，任一设备可决策，先到先得）
 // 见 public/PROTOCOL.md §3。
 
+import { modelMatchesId, readCodexConfiguredModel } from "./codex-models.mjs";
+
 function isLiveTextDelta(method, params) {
   const norm = String(method).toLowerCase().replace(/[/_.-]/g, "");
   if (!norm.includes("agentmessage") || !norm.includes("delta")) return false;
   return ["delta", "text", "chunk"].some((name) => typeof params?.[name] === "string" && params[name]);
+}
+
+// 上游 app-server/CLI 的失败通知名称并不总是完全一致；统一成旧手机页面
+// 已识别的 turn/failed，保证运行态能收尾并至少给出失败横幅。
+function normalizeTurnTerminalMethod(method, params) {
+  const norm = String(method).toLowerCase().replace(/[/_.-]/g, "");
+  if (norm.includes("turnfailed") || norm.includes("turnerror")) return "turn/failed";
+  // 某些引擎会把失败塞进 turn/completed 的状态对象，而不是另发 failed。
+  if (method === "turn/completed") {
+    const state = String(params?.status ?? params?.turn?.status?.type ?? params?.turn?.status ?? "").toLowerCase();
+    if (params?.error || state === "failed" || state === "error") return "turn/failed";
+  }
+  return method;
+}
+
+function failureReason(params) {
+  const raw = [params?.error, params?.message, params?.reason, params?.turn?.error]
+    .map((value) => typeof value === "string" ? value : value?.message)
+    .find((value) => typeof value === "string" && value.trim());
+  return raw ? raw.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 800) : "";
+}
+
+export function pickCodexDefaultModel(models, configuredModel = null) {
+  const list = Array.isArray(models) ? models : [];
+  const model = (configuredModel && list.find((m) => modelMatchesId(m, configuredModel)))
+    ?? list.find((m) => m?.isDefault)
+    ?? list[0];
+  const id = model?.model ?? model?.id;
+  if (typeof id !== "string" || !id.trim()) {
+    throw new Error("Codex 未返回可用的本地模型列表");
+  }
+  return id;
 }
 
 export class SessionHub {
@@ -16,7 +50,10 @@ export class SessionHub {
   #clients = new Set(); // 已鉴权的 ClientSession
   #subscribers = new Map(); // threadId -> Set<ClientSession>
   #resumed = new Set(); // 已 resume 到本 app-server 的 threadId
+  #releasing = new Map(); // threadId -> Promise；unsubscribe 与下一次 resume 串行，避免释放/续聊竞态
+  #startingTurn = new Set(); // ensureResumed 到 turn/started 之间的窗口也算占用，不能提前释放
   #currentTurn = new Map(); // threadId -> turnId（用于 interrupt 与运行状态）
+  #terminalSeq = new Map(); // threadId -> 已收到的终态序号；防 startTurn 应答晚于极快完成事件时把 running 状态写回
   #approvals = new Map(); // approvalKey -> { requestId, threadId, method, params }
   #nextApproval = 1;
   #onAwakeChange;
@@ -38,7 +75,7 @@ export class SessionHub {
   #linkStats = new Map(); // deviceId -> {sessionId, visitors, peak, reactions}（内存，重启即清）
   #liveDeltaStats = new Map(); // threadId -> 原始 app-server delta 到达间隔（每轮结束写一条低频日志）
 
-  // 本 hub 归属的 agent（codex / claude）。审批 key 是各 hub 独立计数器（a1,a2…），
+  // 本 hub 归属的 agent（codex / claude / opencode）。审批 key 是各 hub 独立计数器（a1,a2…），
   // 跨 hub 会撞号——审批通知带上 agent，手机据此把 approval.respond 路由到正确的 hub。
   #agent = "codex";
 
@@ -273,12 +310,46 @@ export class SessionHub {
 
   unsubscribe(threadId, client) {
     this.#subscribers.get(threadId)?.delete(client);
-    if (this.#subscribers.get(threadId)?.size === 0) this.#subscribers.delete(threadId);
+    if (this.#subscribers.get(threadId)?.size === 0) {
+      this.#subscribers.delete(threadId);
+      this.#releaseThreadIfUnused(threadId);
+    }
+  }
+
+  #releaseThreadIfUnused(threadId) {
+    if (!this.#resumed.has(threadId)) return;
+    if (this.#subscribers.get(threadId)?.size) return;
+    if (this.#currentTurn.has(threadId) || this.#startingTurn.has(threadId) || this.approvalCount(threadId)) return;
+    // 先从 resumed 移除：释放进行中若又发消息，#ensureResumed 会等待本次请求后重新 resume。
+    this.#resumed.delete(threadId);
+    if (typeof this.#appServer.unsubscribeThread !== "function") return;
+    const task = Promise.resolve()
+      .then(() => this.#appServer.unsubscribeThread(threadId))
+      .catch((err) => this.#log(`释放会话失败: agent=${this.#agent} session=${threadId} error=${err.message}`))
+      .finally(() => {
+        if (this.#releasing.get(threadId) === task) this.#releasing.delete(threadId);
+      });
+    this.#releasing.set(threadId, task);
   }
 
   // 引擎（app-server）掉线/恢复时广播给所有设备（连接状态分层诊断用）
   broadcastEngineState(healthy) {
     for (const client of this.#clients) client.pushEngineState(healthy);
+  }
+
+  // 是否存在拥有完整设备权限的手机。围观链接没有会话列表权限，因此不能因为
+  // 它们在线而扫描或广播整台电脑的会话元数据。
+  hasBoardClients() {
+    for (const client of this.#clients) if (!client.isViewer) return true;
+    return false;
+  }
+
+  // 外部 Codex / Claude 会话不是本 daemon 发起的，没有对应 threadId 的运行态事件。
+  // 只推一个不含会话名、路径或内容的刷新提示；手机随后按自身当前 agent 拉取列表。
+  broadcastBoardRefresh() {
+    for (const client of this.#clients) {
+      if (!client.isViewer) client.pushBoardChanged({ refresh: true, agent: this.#agent });
+    }
   }
 
   // 引擎掉线善后：进行中的 turn 与待决审批都活在旧引擎进程的内存里，进程一死
@@ -288,6 +359,8 @@ export class SessionHub {
   engineReset() {
     if (this.#currentTurn.size === 0 && this.#approvals.size === 0 && this.#resumed.size === 0) return;
     this.#resumed.clear();
+    this.#releasing.clear();
+    this.#startingTurn.clear();
     const threads = new Set(this.#currentTurn.keys());
     this.#currentTurn.clear();
     for (const [approvalKey, entry] of this.#approvals) {
@@ -342,25 +415,36 @@ export class SessionHub {
   // 已在 client-session 白名单过滤）。plan 展开为 collaborationMode（实测形状：
   // {mode:"plan",settings:{model}}，settings.model 必填，缺省用引擎默认模型）
   async sendMessage(threadId, text, imageUrls = [], overrides) {
-    await this.#ensureResumed(threadId);
-    const input = [
-      ...imageUrls.map((url) => ({ type: "image", url })),
-      ...(text ? [{ type: "text", text }] : []),
-    ];
-    const { plan, ...rest } = overrides ?? {};
-    if (plan) {
-      const model = rest.model ?? (await this.#defaultModel());
-      rest.collaborationMode = {
-        mode: "plan",
-        settings: { model, ...(rest.effort ? { effort: rest.effort } : {}) },
-      };
+    this.#startingTurn.add(threadId);
+    try {
+      await this.#ensureResumed(threadId);
+      const input = [
+        ...imageUrls.map((url) => ({ type: "image", url })),
+        ...(text ? [{ type: "text", text }] : []),
+      ];
+      const { plan, ...rest } = overrides ?? {};
+      if (plan) {
+        const model = rest.model ?? (await this.#defaultModel());
+        rest.collaborationMode = {
+          mode: "plan",
+          settings: { model, ...(rest.effort ? { effort: rest.effort } : {}) },
+        };
+      }
+      const terminalBefore = this.#terminalSeq.get(threadId) ?? 0;
+      const result = await this.#appServer.startTurn(threadId, input, rest);
+      const turnId = result?.turnId ?? result?.turn?.id ?? null;
+      // 某些异步后端（OpenCode prompt_async）可能在 HTTP 应答返回前已完成整轮。
+      // 若终态序号已变化，#onNotification 已清过状态，此处不得把旧 turnId 再写回。
+      if (turnId && (this.#terminalSeq.get(threadId) ?? 0) === terminalBefore) {
+        this.#currentTurn.set(threadId, turnId);
+      }
+      this.#updateAwake();
+      this.#broadcastBoard(threadId);
+      return { turnId };
+    } finally {
+      this.#startingTurn.delete(threadId);
+      this.#releaseThreadIfUnused(threadId);
     }
-    const result = await this.#appServer.startTurn(threadId, input, rest);
-    const turnId = result?.turnId ?? result?.turn?.id ?? null;
-    if (turnId) this.#currentTurn.set(threadId, turnId);
-    this.#updateAwake();
-    this.#broadcastBoard(threadId);
-    return { turnId };
   }
 
   // Claude AskUserQuestion 的选择必须作为当前 turn 的 tool_result 回写，不能排队成
@@ -401,14 +485,15 @@ export class SessionHub {
     }
   }
 
-  // 引擎默认模型（计划模式 settings.model 必填时的兜底），进程内缓存一次
-  #modelDefault = null;
+  // 计划模式 settings.model 必填。配置可能被本地切换工具随时改写，所以这里
+  // 不缓存：每个新回合都以当前 config.toml 的 model 为准，绝不写死模型名。
   async #defaultModel() {
-    if (this.#modelDefault) return this.#modelDefault;
+    const configuredModel = this.#appServer.configuredModelId?.() ?? readCodexConfiguredModel();
+    // config.toml 已给出当前模型时无需等 app-server 的 catalog 刷新；后者只在
+    // 没有本机默认项时提供兜底。
+    if (configuredModel) return configuredModel;
     const r = await this.#appServer.request("model/list", {});
-    const models = r?.data ?? [];
-    this.#modelDefault = (models.find((m) => m.isDefault) ?? models[0])?.model ?? "gpt-5.5";
-    return this.#modelDefault;
+    return pickCodexDefaultModel(r?.data ?? []);
   }
 
   async newThread(cwd) {
@@ -457,6 +542,8 @@ export class SessionHub {
   }
 
   async #ensureResumed(threadId) {
+    const releasing = this.#releasing.get(threadId);
+    if (releasing) await releasing;
     if (this.#resumed.has(threadId)) return;
     await this.#appServer.resumeThread(threadId);
     this.#resumed.add(threadId);
@@ -481,6 +568,12 @@ export class SessionHub {
   #onNotification(method, params) {
     const threadId = params?.threadId;
     if (!threadId) return;
+    const originalMethod = method;
+    method = normalizeTurnTerminalMethod(method, params);
+    if (method !== originalMethod) {
+      const reason = failureReason(params);
+      this.#log(`上游轮次失败已归一化: ${originalMethod}${reason ? ` (${reason})` : ""}`);
+    }
     if (method === "turn/started") this.#liveDeltaStats.delete(threadId);
     this.#recordLiveDelta(threadId, method, params);
     if (method === "thread/archived" || method === "thread/unarchived") {
@@ -495,9 +588,13 @@ export class SessionHub {
     }
     // failed/aborted 同样要清运行状态，否则看板"运行中"永远卡住
     if (method === "turn/completed" || method === "turn/failed" || method === "turn/aborted") {
+      this.#terminalSeq.set(threadId, (this.#terminalSeq.get(threadId) ?? 0) + 1);
+      const reason = method === "turn/failed" ? failureReason(params) : "";
+      if (reason) this.#log(`轮次失败: agent=${this.#agent} session=${threadId} error=${reason}`);
       this.#currentTurn.delete(threadId);
       this.#updateAwake();
       this.#broadcastBoard(threadId);
+      this.#releaseThreadIfUnused(threadId);
       if (method === "turn/completed") {
         this.#onEvent("turnCompleted", { sessionId: threadId, clientsOnline: this.#clients.size });
       }

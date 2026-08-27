@@ -15,17 +15,19 @@
 //   status        -> { enabled, running, deviceCount, notifierCount, relay, version }
 //   enable        -> { ok, enabled, error? }     (platform hook)
 //   disable       -> { ok, enabled }             (platform hook)
-//   pair          -> { url } | { error }         (#d= permanent device link)
-//   pair-once     -> { url } | { error }         (#p= one-time link, 5-min TTL)
-//   devices       -> { devices:[{deviceId,name,createdAt,lastSeenAt, …viewer fields}] }
+//   pair          -> { url } | { error }         (#p= one-time link, 5-min TTL)
+//   pair-once     -> { url } | { error }         (compatibility alias of pair)
+//   pair-permanent -> { url } | { error }        (#d= long-lived device link; revoke in Devices)
+//   devices       -> { devices:[{deviceId,name,createdAt,lastSeenAt,phoneGroup*, …viewer fields}] }
 //   revoke <id>   -> { ok }
 //   prune-unused  -> { ok, removed }
+//   device-group <inputFile> -> { ok, count }    (group browser credentials as one physical phone)
+//   device-ungroup <id> -> { ok }
 //   notify-list   -> { notifiers:[{index,label}] }
-//   notify-add <inputFile>  -> { ok, count }     (input {type,key?|url?,server?} via temp file)
+//   notify-add <inputFile>  -> { ok, count }     (input {type:"jingme",erp} via temp file)
 //   notify-remove <index>       -> { ok }
 //   notify-test [inputFile]     -> { ok, count }     (tests the unsaved entry in inputFile)
 //   notify-test-index <index>   -> { ok, count }     (tests the saved channel at index)
-//   check-update  -> { ok, current, latest, update, url } | { error, current, url }
 import { existsSync, readFileSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -38,74 +40,49 @@ import {
   pairUrl,
   saveConfig,
 } from "./config.mjs";
-import { Notifier, normalizeNotifier, redact } from "./notify.mjs";
+import { createJingmeNotifier, isJingmeNotifier, normalizeJingmeConfig, Notifier, redact } from "./notify.mjs";
 import { listPtyHosts, reattachPtyHost, resolvePtyHostBin } from "./pty-adapter.mjs";
 import { writeQrBmp } from "./qr-bmp.mjs";
-import { compareVersions, cxxVersion } from "./version.mjs";
+import { cxxVersion } from "./version.mjs";
 
 export function status(deps) {
   const config = existsSync(deps.configPath) ? loadOrCreateConfig(deps.configPath) : null;
+  const connectedDevices = (config?.devices ?? []).filter((d) => d.role !== "viewer" && d.lastSeenAt);
+  const physicalDeviceKeys = connectedDevices.map((d) => d.phoneGroupId ? `group:${d.phoneGroupId}` : `device:${d.deviceId}`);
   return {
     enabled: deps.isEnabled(deps),
     running: deps.isRunning(deps),
-    deviceCount: config?.devices?.length ?? 0,
+    // Only count credentials that have actually connected. Manually grouped browser
+    // credentials represent one physical phone and therefore count once.
+    deviceCount: new Set(physicalDeviceKeys).size,
     notifierCount: config?.notifiers?.length ?? 0,
     relay: config?.relayUrl ?? "",
     version: cxxVersion(),
   };
 }
 
-// —— 检查更新 ——
-// 查 GitHub Releases 最新 tag 与自身版本比对。托盘只拿结论：update 为真就引导去下载页。
-// 网络失败（超时/离线/被墙）返回 error + 发布页兜底链接，托盘可让用户手动打开看看。
-const RELEASES_API = "https://api.github.com/repos/iAmbitions/CXX/releases/latest";
-const RELEASES_PAGE = "https://github.com/iAmbitions/CXX/releases/latest";
-
-// 纯函数：把 API 响应整形成托盘要的结论（单测覆盖这里，网络层不掺和）。
-export function shapeUpdateResult(current, release) {
-  const latest = String(release?.tag_name ?? "").replace(/^v/i, "");
-  if (!latest) return { error: "响应里没有版本号（tag_name 缺失）", current, url: RELEASES_PAGE };
-  return {
-    ok: true,
-    current,
-    latest,
-    update: compareVersions(latest, current) > 0,
-    url: release?.html_url || RELEASES_PAGE,
-  };
-}
-
-export async function checkUpdate(deps, { fetchImpl = fetch, timeoutMs = 8000 } = {}) {
-  const current = cxxVersion();
-  try {
-    const res = await fetchImpl(RELEASES_API, {
-      headers: {
-        "User-Agent": `cxx/${current}`,
-        Accept: "application/vnd.github+json",
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) return { error: `GitHub 返回 HTTP ${res.status}`, current, url: RELEASES_PAGE };
-    return shapeUpdateResult(current, await res.json());
-  } catch (err) {
-    const msg = err?.name === "TimeoutError" ? "请求超时" : (err?.message ?? String(err));
-    return { error: msg, current, url: RELEASES_PAGE };
-  }
-}
-
-// 永久链接：内嵌长期设备令牌，扫码/点击即永久连接（可在「已配对设备」撤销）
+// 临时二维码/链接：5 分钟内有效、仅可用一次。令牌被手机成功消费前不会创建
+// 设备记录，避免每次生成临时码都留下“从未连接”的垃圾条目。
 export function pair(deps) {
+  const config = loadOrCreateConfig(deps.configPath);
+  if (!config.relayUrl) return { error: "未配置 relay" };
+  const token = issuePairToken(deps.configPath, config);
+  return maybeAttachQr({ url: pairUrl(loadOrCreateConfig(deps.configPath), token) }, deps);
+}
+
+// 长期二维码/链接：面向本人常用手机。链接内含长期设备凭据，因此同一链接可重复打开；
+// 重复使用同一链接仍命中同一个 deviceId，不会重复创建设备。设备统计只计算实际连接过的
+// 条目，因此生成但尚未使用的长期链接不会在控制中心冒充一台手机。
+export function pairPermanent(deps) {
   const config = loadOrCreateConfig(deps.configPath);
   if (!config.relayUrl) return { error: "未配置 relay" };
   const { deviceToken } = issueDeviceToken(deps.configPath, config);
   return maybeAttachQr({ url: deviceUrl(loadOrCreateConfig(deps.configPath), deviceToken) }, deps);
 }
 
-// 一次性链接：5 分钟内有效、仅可用一次（适合临时发出去的场景）
+// 兼容旧 CLI/壳调用：与临时码 pair 完全等价。
 export function pairOnce(deps) {
-  const config = loadOrCreateConfig(deps.configPath);
-  if (!config.relayUrl) return { error: "未配置 relay" };
-  const token = issuePairToken(deps.configPath, config);
-  return maybeAttachQr({ url: pairUrl(loadOrCreateConfig(deps.configPath), token) }, deps);
+  return pair(deps);
 }
 
 function maybeAttachQr(result, deps) {
@@ -139,6 +116,9 @@ export function listDevices(deps) {
       name: d.name || "",
       createdAt: d.createdAt ?? null,
       lastSeenAt: d.lastSeenAt ?? null,
+      // 手动归并仅影响桌面展示，绝不合并/共享浏览器令牌：各浏览器仍各自独立认证。
+      phoneGroupId: d.phoneGroupId ?? null,
+      phoneGroupName: d.phoneGroupName ?? null,
       // 围观链接扩展字段（全权设备缺省）：桌面设备页渲染只读徽标/会话名/时效/观众数
       ...(d.role === "viewer"
         ? {
@@ -152,6 +132,46 @@ export function listDevices(deps) {
         : {}),
     })),
   };
+}
+
+// 手动把多个已连接的浏览器凭据归入同一“手机”展示组。此操作不改 token、不撤销
+// 设备，也不会影响手机端连接；仅避免浏览器/域名隔离把同一台手机显示成多台设备。
+export function groupDevices(deps, input = {}) {
+  const primaryId = String(input.primaryId ?? "");
+  const memberId = String(input.memberId ?? "");
+  if (!primaryId || !memberId || primaryId === memberId) {
+    return { ok: false, error: "请选择两个不同的已连接设备" };
+  }
+  const config = loadOrCreateConfig(deps.configPath);
+  const fullDevices = (config.devices ?? []).filter((d) => d.role !== "viewer");
+  const primary = fullDevices.find((d) => d.deviceId === primaryId);
+  const member = fullDevices.find((d) => d.deviceId === memberId);
+  if (!primary || !member) return { ok: false, error: "设备不存在或不能归并只读链接" };
+  if (!primary.lastSeenAt || !member.lastSeenAt) {
+    return { ok: false, error: "只能归并至少成功连接过一次的设备" };
+  }
+  const groupId = primary.phoneGroupId || `phone:${primary.deviceId}`;
+  const name = String(input.name ?? "").trim().slice(0, 48) || primary.phoneGroupName || primary.name || "同一台手机";
+  // 若主设备本来已在一组，成员加入整组；不去自动猜测其它设备，避免误把不同手机混在一起。
+  for (const d of fullDevices) {
+    if (d.deviceId === primary.deviceId || d.deviceId === member.deviceId || d.phoneGroupId === groupId) {
+      d.phoneGroupId = groupId;
+      d.phoneGroupName = name;
+    }
+  }
+  saveConfig(deps.configPath, config);
+  return { ok: true, count: fullDevices.filter((d) => d.phoneGroupId === groupId).length, groupId, name };
+}
+
+// 解除当前浏览器凭据的展示归并，不撤销它，也不会断开远程连接。
+export function ungroupDevice(deps, deviceId) {
+  const config = loadOrCreateConfig(deps.configPath);
+  const device = (config.devices ?? []).find((d) => d.deviceId === deviceId && d.role !== "viewer");
+  if (!device?.phoneGroupId) return { ok: false, error: "该设备当前不在同一手机组中" };
+  delete device.phoneGroupId;
+  delete device.phoneGroupName;
+  saveConfig(deps.configPath, config);
+  return { ok: true };
 }
 
 export function revokeDevice(deps, deviceId) {
@@ -174,43 +194,59 @@ export function pruneUnusedDevices(deps) {
   return { ok: true, removed };
 }
 
+function keepJingmeNotifiers(config) {
+  const before = Array.isArray(config.notifiers) ? config.notifiers : [];
+  const next = before.filter(isJingmeNotifier);
+  const changed = next.length !== before.length;
+  config.notifiers = next;
+  return changed;
+}
+
 export function notifyList(deps) {
   const config = existsSync(deps.configPath) ? loadOrCreateConfig(deps.configPath) : { notifiers: [] };
-  return { notifiers: (config.notifiers ?? []).map((n, index) => ({ index, label: redact(n) })) };
+  if (keepJingmeNotifiers(config)) saveConfig(deps.configPath, config);
+  return { notifiers: config.notifiers.map((n, index) => ({ index, label: redact(n) })) };
 }
 
 export function notifyAdd(deps, entry) {
   const config = loadOrCreateConfig(deps.configPath);
-  config.notifiers = config.notifiers ?? [];
-  config.notifiers.push(normalizeNotifier(entry));
+  keepJingmeNotifiers(config);
+  const notifier = entry?.type === "jingme" ? createJingmeNotifier(entry.erp) : null;
+  if (!notifier) return { ok: false, error: "仅支持京Me机器人通知，ERP 格式无效" };
+  if (!normalizeJingmeConfig(config.jingme)) return { ok: false, error: "本机未配置京Me机器人凭据" };
+  if (!config.notifiers.some((n) => n.erp === notifier.erp)) config.notifiers.push(notifier);
   saveConfig(deps.configPath, config);
   return { ok: true, count: config.notifiers.length };
 }
 
 export function notifyRemove(deps, index) {
   const config = loadOrCreateConfig(deps.configPath);
-  config.notifiers = config.notifiers ?? [];
+  keepJingmeNotifiers(config);
   if (index < 0 || index >= config.notifiers.length) return { ok: false };
   config.notifiers.splice(index, 1);
   saveConfig(deps.configPath, config);
   return { ok: true };
 }
 
-// 测试输入框里刚填、尚未「添加」的一条渠道（不落盘，纯 dry-run）。
+// 测试输入框中尚未添加的京Me接收人；不落盘。
 export async function notifyTest(deps, entry) {
-  const notifier = new Notifier(entry ? [normalizeNotifier(entry)] : [], { log: deps.log });
-  await notifier.send("ChatGPT 远程测试", "如果你收到这条，说明通知渠道配置成功 ✅");
-  return { ok: true, count: notifier.count };
+  const config = loadOrCreateConfig(deps.configPath);
+  const notifierEntry = entry?.type === "jingme" ? createJingmeNotifier(entry.erp) : null;
+  if (!notifierEntry) return { ok: false, count: 0, error: "ERP 格式无效" };
+  const notifier = new Notifier([notifierEntry], { log: deps.log, jingme: config.jingme });
+  const ok = await notifier.send("口袋Agent 测试", "如果你收到这条，说明京Me机器人通知配置成功 ✅");
+  return { ok, count: notifier.count, ...(ok ? {} : { error: "京Me测试消息发送失败" }) };
 }
 
-// 测试某个已配置渠道（按 index，供「已配置」列表每行的测试按钮用）。
+// 测试一个已保存的京Me接收人。
 export async function notifyTestIndex(deps, index) {
   const config = existsSync(deps.configPath) ? loadOrCreateConfig(deps.configPath) : { notifiers: [] };
-  const list = config.notifiers ?? [];
+  if (keepJingmeNotifiers(config)) saveConfig(deps.configPath, config);
+  const list = config.notifiers;
   if (!Number.isInteger(index) || index < 0 || index >= list.length) return { ok: false, count: 0 };
-  const notifier = new Notifier([list[index]], { log: deps.log });
-  await notifier.send("ChatGPT 远程测试", "如果你收到这条，说明通知渠道配置成功 ✅");
-  return { ok: true, count: notifier.count };
+  const notifier = new Notifier([list[index]], { log: deps.log, jingme: config.jingme });
+  const ok = await notifier.send("口袋Agent 测试", "如果你收到这条，说明京Me机器人通知配置成功 ✅");
+  return { ok, count: notifier.count, ...(ok ? {} : { error: "京Me测试消息发送失败" }) };
 }
 
 // —— Terminal Mode（internal/TERMINAL-MODE.md §4.8/§13.1）——
@@ -289,15 +325,17 @@ export async function runMenuCommand(command, rest, deps) {
     case "disable": return deps.disable(deps);
     case "pair": return pair(deps);
     case "pair-once": return pairOnce(deps);
+    case "pair-permanent": return pairPermanent(deps);
     case "devices": return listDevices(deps);
     case "revoke": return revokeDevice(deps, rest[0]);
     case "prune-unused": return pruneUnusedDevices(deps);
+    case "device-group": return groupDevices(deps, JSON.parse(readFileSync(rest[0], "utf8")));
+    case "device-ungroup": return ungroupDevice(deps, rest[0]);
     case "notify-list": return notifyList(deps);
     case "notify-add": return notifyAdd(deps, JSON.parse(readFileSync(rest[0], "utf8")));
     case "notify-remove": return notifyRemove(deps, Number(rest[0]));
     case "notify-test": return notifyTest(deps, rest[0] ? JSON.parse(readFileSync(rest[0], "utf8")) : undefined);
     case "notify-test-index": return notifyTestIndex(deps, Number(rest[0]));
-    case "check-update": return checkUpdate(deps);
     case "terminal-status": return terminalStatus(deps);
     case "terminal-enable": return terminalEnable(deps, rest[0] !== "0" && rest[0] !== "false");
     case "terminal-access": return terminalAccess(deps, rest[0], rest[1] !== "0" && rest[1] !== "false");
@@ -307,8 +345,7 @@ export async function runMenuCommand(command, rest, deps) {
 }
 
 export const MENU_COMMANDS = new Set([
-  "status", "enable", "disable", "pair", "pair-once", "devices",
-  "revoke", "prune-unused", "notify-list", "notify-add", "notify-remove", "notify-test", "notify-test-index",
-  "check-update",
+  "status", "enable", "disable", "pair", "pair-once", "pair-permanent", "devices",
+  "revoke", "prune-unused", "device-group", "device-ungroup", "notify-list", "notify-add", "notify-remove", "notify-test", "notify-test-index",
   "terminal-status", "terminal-enable", "terminal-access", "terminal-close",
 ]);

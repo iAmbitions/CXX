@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { codexInvocation } from "./codex-path.mjs";
 import { killProcessTree, reapStalePids, writePidFile } from "./proc-reap.mjs";
 import { CachedProjects } from "./project-index.mjs";
+import { readCodexConfiguredModel } from "./codex-models.mjs";
 
 // 清理上一条 daemon 生命周期遗留的 codex（进程被 SIGKILL/崩溃时来不及走 stop 的兜底）。
 // 认主 + 命令行验身的通用逻辑在 proc-reap.mjs；这里只提供 codex 的身份正则。
@@ -17,6 +18,30 @@ export function reapStaleAppServer(pidFile, log = () => {}) {
   });
 }
 
+export function singleFlight(inFlight, key, task) {
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+  const pending = Promise.resolve().then(task);
+  inFlight.set(key, pending);
+  pending.finally(() => {
+    if (inFlight.get(key) === pending) inFlight.delete(key);
+  }).catch(() => {});
+  return pending;
+}
+
+export function appServerSpawnOptions(env = null) {
+  return {
+    stdio: ["ignore", "ignore", "pipe"],
+    windowsHide: true,
+    // launchd 不继承用户 shell 中的 OPENAI_API_KEY / 自定义 provider token。
+    // main 在启动时安全采集一次登录 shell 环境并传进来；值绝不写日志。
+    ...(env ? { env } : {}),
+    // 自成进程组：codex 的 node wrapper 不转发信号给原生子进程，只有成组后
+    // stop() 才能用负 pid 把 wrapper+原生一并带走，不留孤儿（见 killProcessTree）。
+    detached: true,
+  };
+}
+
 export class AppServer {
   #command;
   #port;
@@ -24,7 +49,11 @@ export class AppServer {
   #ws = null;
   #nextId = 1;
   #pending = new Map();
+  // Codex 首次 thread/list 会建立/恢复会话索引；同一时刻首页、项目索引和外部同步
+  // 可能请求同一页。合并完全相同的请求，避免重复扫描超大会话文件。
+  #threadListInFlight = new Map();
   #log;
+  #env;
   #closed = false;
   #pidFile = null; // 记录子进程 pid，供下次启动清理崩溃残留（见 reapStaleAppServer）
   // 首页「按项目」聚合缓存：本地全量扫描一次分组，projects.list 命中即 0 往返（见 project-index.mjs）
@@ -39,31 +68,41 @@ export class AppServer {
     return this.#ws !== null;
   }
 
-  constructor({ command = "codex", port = 19271, log = () => {}, pidFile = null } = {}) {
+  constructor({ command = "codex", port = 19271, log = () => {}, pidFile = null, env = null } = {}) {
     this.#command = command;
     this.#port = port;
     this.#log = log;
     this.#pidFile = pidFile;
+    this.#env = env;
   }
 
   get url() {
     return `ws://127.0.0.1:${this.#port}`;
   }
 
+  // 仅读取当前用户的 Codex 配置，不把 token 或 provider 配置暴露给手机端。
+  configuredModelId() {
+    return readCodexConfiguredModel();
+  }
+
   async start() {
     this.#closed = false;
-    await this.#spawnAndConnect();
+    try {
+      await this.#spawnAndConnect();
+    } catch (err) {
+      // 启动阶段失败时必须同时收掉已 spawn 的 wrapper + 原生子进程。否则 launchd
+      // 重拉 daemon 时旧子进程还在冷启动，会抢端口并叠成持续重启风暴。
+      this.stop();
+      throw err;
+    }
   }
 
   async #spawnAndConnect() {
     const invocation = codexInvocation(this.#command, ["app-server", "--listen", this.url]);
-    this.#child = spawn(invocation.command, invocation.args, {
-      stdio: ["ignore", "ignore", "pipe"],
-      windowsHide: true,
-      // 自成进程组：codex 的 node wrapper 不转发信号给原生子进程，只有成组后
-      // stop() 才能用负 pid 把 wrapper+原生一并带走，不留孤儿（见 killProcessTree）。
-      detached: true,
-    });
+    if (invocation.command !== this.#command) {
+      this.#log(`codex 是 Node 启动脚本，使用绝对解释器: ${invocation.command}`);
+    }
+    this.#child = spawn(invocation.command, invocation.args, appServerSpawnOptions(this.#env));
     // 记录 pid：本次若被 SIGKILL/崩溃来不及 stop，下次启动靠它清理残留（reapStaleAppServer）
     if (this.#pidFile && this.#child.pid) {
       writePidFile(this.#pidFile, [this.#child.pid], this.#log);
@@ -92,7 +131,9 @@ export class AppServer {
   }
 
   async #waitReady() {
-    const deadline = Date.now() + 15000;
+    // LaunchAgent 使用 Background QoS，系统繁忙或冷启动时 Codex 的插件/配置初始化
+    // 可能明显慢于终端直跑。15s 会误杀仍在正常启动的进程并触发 launchd 重启循环。
+    const deadline = Date.now() + 60000;
     while (Date.now() < deadline) {
       try {
         const res = await fetch(`http://127.0.0.1:${this.#port}/readyz`);
@@ -199,6 +240,15 @@ export class AppServer {
     return promise;
   }
 
+  // thread/list 的冷启动实测可超过 30 秒（尤其存在数 GB rollout 时）。它只是本地索引读取，
+  // 不能沿用普通 RPC 的 15 秒超时；并发相同页必须单飞，否则 projects.list、首页 head page
+  // 和外部会话同步会让 Codex 同时重复扫描，反而把一次慢请求放大成持续超时。
+  #requestThreadList(params) {
+    const key = JSON.stringify(params);
+    return singleFlight(this.#threadListInFlight, key, () =>
+      this.request("thread/list", params, this.#THREAD_LIST_TIMEOUT));
+  }
+
   // 引擎 thread 条目 → 手机端精简视图（含 rollout path，仅 daemon 内部用）
   #mapThread(t) {
     return {
@@ -214,14 +264,11 @@ export class AppServer {
     };
   }
 
-  // 分批拉取（供 sessions.list 分页应答）：一次客户端请求，daemon 内部翻若干页
-  // app-server（引擎单页硬上限 100）拼成一帧，回传合并结果 + 末页游标。绝不整份历史
-  // 一次发——会挤爆 relay 的 256KiB 帧上限（帧被丢/连接被关，客户端卡住）。列表行已不回
-  // preview（仅无名会话回一小段）+ d2c 大帧 deflate 压缩（实测真实数据 ~5x），2000 条压后
-  // 上线帧 ~120KiB，稳在上限内。由客户端带 nextCursor 继续下一批，projects 随批到达逐步补全。
-  // cwd 给定时按项目过滤（引擎原生支持，服务端过滤，仅回该项目会话）——首页展开某项目
-  // 时只拉它自己的会话，与总量无关，恒定有界。不给 cwd 即原行为。
+  // 分批拉取（供 sessions.list 分页应答）。无 cwd 时按引擎游标分页；有 cwd 时直接从
+  // projects.list 已建立的同一份项目索引分页，避免用户展开项目时再次请求引擎、长时间等待。
+  // 单帧仍封顶 2000 条，避免挤爆 relay 的 256KiB 帧上限。
   async listThreadsPage({ cursor = null, limit = 2000, cwd = null } = {}) {
+    if (cwd) return this.#projects.page(cwd, { cursor, limit });
     const target = Math.max(1, Math.min(2000, limit | 0)); // 封顶 2000：压缩后仍稳在 256KiB 内
     const items = [];
     let cur = cursor;
@@ -230,8 +277,7 @@ export class AppServer {
     for (let i = 0; i < maxPages && items.length < target; i++) {
       const params = { limit: 100, archived: false }; // 引擎单页上限；手机端只展示未归档会话
       if (cur) params.cursor = cur;
-      if (cwd) params.cwd = cwd;
-      const result = await this.request("thread/list", params);
+      const result = await this.#requestThreadList(params);
       const batch = result?.data ?? [];
       items.push(...batch);
       cur = result?.nextCursor ?? null;
@@ -242,8 +288,8 @@ export class AppServer {
 
   // 首页「按项目」聚合：一次本地全量扫描分组（TTL 缓存 + 单飞），一帧回全部项目，
   // 与会话总量无关地只需 1 次往返。运行/审批徽标由 client-session 实时从 hub 叠加。
-  aggregateProjects() {
-    return this.#projects.get();
+  aggregateProjects({ fresh = false } = {}) {
+    return this.#projects.get({ fresh });
   }
 
   // 会话集合变化（新建会话等）后调用，令下次 projects.list 重新扫描而非等 TTL 过期。
@@ -285,7 +331,7 @@ export class AppServer {
     for (let guard = 0; guard < 60 && items.length < target; guard++) {
       const params = { limit: pageSize, archived: false };
       if (cursor) params.cursor = cursor;
-      const result = await this.request("thread/list", params);
+      const result = await this.#requestThreadList(params);
       const batch = result?.data ?? [];
       items.push(...batch);
       cursor = result?.nextCursor ?? null;
@@ -303,6 +349,10 @@ export class AppServer {
     return unique.slice(0, target).map((t) => this.#mapThread(t));
   }
 
+  // thread/list 首次读取会建立本地索引；本机 5.2GB 会话库实测冷读约 30 秒。
+  // 留足 75 秒但不无限等待，手机端列表请求使用稍长的 90 秒外层超时。
+  #THREAD_LIST_TIMEOUT = 75000;
+
   // 会话级方法可能因模型初始化/网络（如国内访问模型列表）而较慢，
   // 用更长的超时；实测 resume 在网络不佳时约 16s。
   #SESSION_TIMEOUT = 90000;
@@ -310,6 +360,13 @@ export class AppServer {
   // 恢复会话到本 app-server 实例（幂等，daemon 侧去重）
   resumeThread(threadId, overrides = {}) {
     return this.request("thread/resume", { threadId, ...overrides }, this.#SESSION_TIMEOUT);
+  }
+
+  // 手机不再查看且该会话没有运行中的轮次时，主动释放 app-server 对 thread 的订阅。
+  // 否则独立的口袋Agent app-server 会继续占着会话，官方桌面端会提示
+  // “已在另一个应用中打开”。旧版 Codex 不支持该方法时由 SessionHub 降级处理。
+  unsubscribeThread(threadId) {
+    return this.request("thread/unsubscribe", { threadId }, this.#SESSION_TIMEOUT);
   }
 
   // 发起一轮对话（input 为字符串，或 turn/start 输入项数组——文本+图片混合时用后者），

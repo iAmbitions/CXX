@@ -1,4 +1,4 @@
-// Windows (Task Scheduler) keepalive layer for the CXX daemon.
+// Windows (Task Scheduler) keepalive layer for the Pocket Agent daemon.
 //
 // Mirrors mac-agent.mjs's Model A contract: the tray shell calls
 // `cxx-daemon <subcommand>` for one-shot JSON actions, while the daemon itself is
@@ -48,7 +48,7 @@ export function buildTaskXml({ program, args = [], workingDir, userId, vbs }) {
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>CXX remote daemon</Description>
+    <Description>Pocket Agent remote daemon</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
