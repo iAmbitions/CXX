@@ -4129,6 +4129,7 @@ const app = {
   permState: null,         // 当前会话从 tail 读到的真实权限状态 {perm, label, raw, source}
   modelState: null,        // 当前会话从 tail 读到的真实模型状态 {id, name, effort}
   models: null,            // models.list 结果缓存（懒加载）
+  modelDaemonInstance: null, // 仅 daemon 真正重启/升级时失效；RTC 热切换和普通重连不重复拉
   planMode: false,         // 计划模式（会话级，切换会话即复位）
   ctxPct: null,            // 本会话上下文用量百分比（token_count 事件回填，暂不常显）
   toolNodes: new Map(),    // call_id -> {stat, tout}，输出到达时并入调用行
@@ -9240,6 +9241,7 @@ function startSession(info) {
   const session = new Session(info);
   app.session = session;
   app.models = null; // 模型列表随电脑走，切换后重新取
+  app.modelDaemonInstance = null;
   app.modelState = null;
   if (!app.isViewer) {
     resetListModel();              // 换绑电脑：上一台的列表数据不跨 daemon
@@ -9293,10 +9295,14 @@ function startSession(info) {
       return;
     }
     loadAgents();     // 优先填充 agent 切换器（失败静默，仅 codex；<2 后端时隐藏）
-    // daemon 可能已在断线期间升级或重启；旧模型表不能跨重连常驻，
-    // 否则手机会继续展示升级前缓存的上百个 OpenCode 公共模型。
-    app.models = null;
-    modelsLoading = false;
+    // 只在 daemon 进程实例真正变化时失效模型缓存。中继重连、切前后台、
+    // RTC 升级/回落都会重复触发 onReady，不能因此反复拉 OpenCode 模型目录。
+    const modelDaemonInstance = auth?.daemonInstanceId || null;
+    if (modelDaemonInstance && app.modelDaemonInstance && modelDaemonInstance !== app.modelDaemonInstance) {
+      app.models = null;
+      modelsLoading = false;
+    }
+    if (modelDaemonInstance) app.modelDaemonInstance = modelDaemonInstance;
     prefetchModels(); // 静默：给模型胶囊补上电脑端默认模型号
     updateHomeTab();  // 终端能力随本次 auth 的 caps 刷新（换绑电脑/开关变化）
     try {
