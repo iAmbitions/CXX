@@ -1,4 +1,4 @@
-# CXX Internal Official Relay
+# Pocket Agent Internal Official Relay
 
 This directory contains the versioned official Wokey relay deployment overlay.
 Public self-hosting files stay in `relay/worker/`; official source and config

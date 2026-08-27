@@ -2,7 +2,7 @@ name = "codex-zh-relay"
 main = "src/worker.official.mjs"
 compatibility_date = "2026-06-01"
 
-# CXX internal official deployment for the shared relay.wokey.ai hostname.
+# Pocket Agent internal official deployment for the shared relay.wokey.ai hostname.
 #
 # The live shared hostname is currently owned by the codex-zh-relay Worker.
 # Keep that script name here so deploying this config updates the current shared
