@@ -114,6 +114,42 @@ test("OpenCode model refs, permissions and transcript normalization", () => {
   assert.equal(entry.message.content[1].tool_use_id, "c1");
 });
 
+test("OpenCode model catalog prefers explicitly configured models over full connected catalogs", () => {
+  const providers = {
+    connected: ["builtin", "custom"],
+    all: [
+      { id: "builtin", name: "Built in", models: {
+        a: { id: "a", name: "A" },
+        b: { id: "b", name: "B" },
+      } },
+      { id: "custom", name: "Custom", models: {
+        chosen: { id: "chosen", name: "Chosen", variants: { high: {} } },
+        extra: { id: "extra", name: "Extra" },
+      } },
+    ],
+  };
+  const models = buildOpenCodeModelCatalog(providers, {
+    model: "custom/chosen",
+    provider: { custom: { models: { chosen: { name: "Chosen" } } } },
+  });
+  assert.deepEqual(models.map((m) => [m.id, m.isDefault]), [["custom/chosen", true]]);
+  assert.deepEqual(models[0].supportedReasoningEfforts, [{ reasoningEffort: "high" }]);
+});
+
+test("OpenCode model catalog keeps the full connected list when no model allowlist is configured", () => {
+  const providers = {
+    connected: ["p"],
+    all: [{ id: "p", name: "Provider", models: {
+      a: { id: "a", name: "A" },
+      b: { id: "b", name: "B" },
+    } }],
+  };
+  assert.deepEqual(
+    buildOpenCodeModelCatalog(providers, { model: "p/b" }).map((m) => [m.id, m.isDefault]),
+    [["p/b", true], ["p/a", false]],
+  );
+});
+
 test("OpenCode backend lists global sessions and exposes one real default model", async (t) => {
   const fake = await fakeOpenCode();
   const baseDir = mkdtempSync(join(tmpdir(), "cxx-opencode-test-"));
